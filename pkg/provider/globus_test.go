@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -90,5 +91,90 @@ func TestGlobusCredentialsFromSeparateSecretKeys(t *testing.T) {
 	}
 	if credential.ClientID != "client-id" || credential.ClientSecret != "client-secret" {
 		t.Fatalf("credential = %+v", credential)
+	}
+}
+
+func TestGlobusCredentialsSupportBearerAndRefreshTokens(t *testing.T) {
+	tests := []struct {
+		name   string
+		data   map[string][]byte
+		assert func(*testing.T, globusCredentialFile)
+	}{
+		{
+			name: "access token",
+			data: map[string][]byte{defaultGlobusAccessTokenSecretKey: []byte("access-token")},
+			assert: func(t *testing.T, credential globusCredentialFile) {
+				if credential.AccessToken != "access-token" || credential.RefreshToken != "" {
+					t.Fatalf("credential = %+v", credential)
+				}
+			},
+		},
+		{
+			name: "bearer token alias",
+			data: map[string][]byte{defaultGlobusBearerTokenSecretKey: []byte("bearer-token")},
+			assert: func(t *testing.T, credential globusCredentialFile) {
+				if credential.AccessToken != "bearer-token" {
+					t.Fatalf("credential = %+v", credential)
+				}
+			},
+		},
+		{
+			name: "refresh token",
+			data: map[string][]byte{
+				defaultGlobusClientIDSecretKey:     []byte("client-id"),
+				defaultGlobusClientSecretKey:       []byte("client-secret"),
+				defaultGlobusRefreshTokenSecretKey: []byte("refresh-token"),
+			},
+			assert: func(t *testing.T, credential globusCredentialFile) {
+				if credential.RefreshToken != "refresh-token" || credential.ClientID != "client-id" || credential.ClientSecret != "client-secret" {
+					t.Fatalf("credential = %+v", credential)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			credential, err := globusCredentialsFromSecret(&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "globus-client", Namespace: "work"},
+				Data:       tt.data,
+			}, "")
+			if err != nil {
+				t.Fatalf("globusCredentialsFromSecret: %v", err)
+			}
+			tt.assert(t, credential)
+		})
+	}
+}
+
+func TestGlobusCredentialRefreshTokenRequiresClientCredentials(t *testing.T) {
+	_, err := globusCredentialsFromSecret(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "globus-client", Namespace: "work"},
+		Data:       map[string][]byte{defaultGlobusRefreshTokenSecretKey: []byte("refresh-token")},
+	}, "")
+	if err == nil || !strings.Contains(err.Error(), "client_id") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestGlobusResolverSelectsTokenSourceByCredentialType(t *testing.T) {
+	resolver := &SecretGlobusClientResolver{authTokenURL: globusapi.DefaultAuthTokenURL, httpClient: http.DefaultClient}
+
+	bearer, err := resolver.tokenSourceForCredential(globusCredentialFile{AccessToken: "access-token"}, globusapi.TransferScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := bearer.(*globusapi.StaticTokenSource); !ok {
+		t.Fatalf("bearer source type = %T", bearer)
+	}
+
+	refresh, err := resolver.tokenSourceForCredential(globusCredentialFile{
+		ClientID: "client-id", ClientSecret: "client-secret", AccessToken: "access-token", RefreshToken: "refresh-token",
+	}, globusapi.TransferScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := refresh.(*globusapi.RefreshTokenSource); !ok {
+		t.Fatalf("refresh source type = %T", refresh)
 	}
 }

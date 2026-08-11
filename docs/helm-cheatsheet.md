@@ -20,6 +20,22 @@ kubectl create secret generic globus-client \
   --from-literal=client_secret="$GLOBUS_CLIENT_SECRET"
 ```
 
+Alternatively, create the same referenced Secret from a Transfer API bearer token:
+
+```bash
+kubectl create secret generic globus-client \
+  --from-literal=access_token="$GLOBUS_ACCESS_TOKEN"
+```
+
+Or from a refresh token and its confidential client:
+
+```bash
+kubectl create secret generic globus-client \
+  --from-literal=client_id="$GLOBUS_CLIENT_ID" \
+  --from-literal=client_secret="$GLOBUS_CLIENT_SECRET" \
+  --from-literal=refresh_token="$GLOBUS_REFRESH_TOKEN"
+```
+
 ## Enable StatefulSet via Helm Values
 ```yaml
 statefulset:

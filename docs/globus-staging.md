@@ -4,7 +4,11 @@
 
 Globus staging talks directly to Globus Auth and the Globus Transfer API. SFAPI is still used to submit and monitor the Perlmutter Slurm job, but it is no longer involved in Globus transfers.
 
-The provider uses an OAuth 2.0 client-credentials grant. Register a confidential Globus application, create a client secret, and grant its client identity (`<client-id>@clients.auth.globus.org`) access to both collections and filesystem paths used by the transfer.
+The provider supports three authentication methods: an existing Transfer API bearer token, a refresh token issued to a confidential Globus application, or an OAuth 2.0 client-credentials grant. Tokens are never included in a Slurm script.
+
+### Client credentials
+
+Register a confidential Globus application, create a client secret, and grant its client identity (`<client-id>@clients.auth.globus.org`) access to both collections and filesystem paths used by the transfer.
 
 Create a workload-namespaced Secret in either supported format:
 
@@ -22,7 +26,41 @@ stringData:
     }
 ```
 
-The Secret may instead contain separate `client_id` and `client_secret` keys. Globus access tokens are obtained from Globus Auth, cached in memory until shortly before expiry, and never included in a Slurm script.
+The Secret may instead contain separate `client_id` and `client_secret` keys. Access tokens obtained from Globus Auth are cached in memory until shortly before expiry.
+
+### Bearer token
+
+To use an existing Transfer API access token, store it as `access_token` (or the `bearer_token` alias):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: globus-bearer-token
+type: Opaque
+stringData:
+  access_token: "<globus-transfer-access-token>"
+```
+
+The provider uses bearer tokens as-is and cannot refresh them. Rotate the Secret before the token expires; a changed Secret resource version causes the provider to build a client with the new token.
+
+### Refresh token
+
+To have the provider obtain and cache fresh access tokens, store the refresh token together with the confidential client that received it:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: globus-refresh-token
+type: Opaque
+stringData:
+  client_id: "<globus-client-id>"
+  client_secret: "<globus-client-secret>"
+  refresh_token: "<globus-transfer-refresh-token>"
+```
+
+The refresh token must have been issued for the Transfer API scopes needed by the collections. If Globus rotates the refresh token in its response, the provider uses the rotated value in memory for the lifetime of that client. Secret credential detection uses this precedence: `refresh_token`, then `access_token`/`bearer_token`, then client credentials.
 
 ## Stage-In
 
@@ -65,10 +103,10 @@ After the Slurm job succeeds, VK submits the output transfer and keeps the pod i
 
 | Annotation | Required | Description |
 | --- | --- | --- |
-| `globus.api/credentialSecretName` | For Globus staging | Secret in the workload namespace containing Globus client credentials. |
-| `globus.api/credentialSecretKey` | No | JSON credential key; defaults to `globus.json`. If absent, separate `client_id` and `client_secret` keys are read. |
+| `globus.api/credentialSecretName` | For Globus staging | Secret containing client credentials, an access/bearer token, or a refresh token. |
+| `globus.api/credentialSecretKey` | No | JSON credential key; defaults to `globus.json`. If absent, separate `client_id`, `client_secret`, `access_token`/`bearer_token`, and `refresh_token` keys are read. |
 | `globus.api/stagingCollectionID` | For Globus staging | Globus collection UUID exposing the concrete NERSC scratch path. |
-| `globus.api/scope` | No | Globus Auth scope string. Defaults to `urn:globus:auth:scope:transfer.api.globus.org:all`. Use the `required_scopes` returned by a `ConsentRequired` error for GCS v5 mapped collections. |
+| `globus.api/scope` | No | Scope requested by the client-credentials flow. Defaults to `urn:globus:auth:scope:transfer.api.globus.org:all`. Bearer and refresh tokens retain their issued scopes. |
 | `nersc.sf/scratchBase` | For Globus staging | Concrete absolute path visible through the staging collection. Shell expressions such as `$SCRATCH` cannot be sent to the Transfer API. |
 | `nersc.sf/inputSource` | For stage-in | `globus://<collection-uuid>/<collection-relative-path>`. |
 | `nersc.sf/outputDest` | When stage-out is enabled | `globus://<collection-uuid>/<collection-relative-path>`. |
