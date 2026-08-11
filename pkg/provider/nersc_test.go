@@ -13,7 +13,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	globusapi "vk-provider-nersc/pkg/globus"
 	"vk-provider-nersc/pkg/superfacility"
+)
+
+const (
+	testSourceCollectionID      = "11111111-1111-4111-8111-111111111111"
+	testDestinationCollectionID = "22222222-2222-4222-8222-222222222222"
+	testStagingCollectionID     = "33333333-3333-4333-8333-333333333333"
 )
 
 type fakeJobClient struct {
@@ -34,6 +41,50 @@ type fakeJobClient struct {
 	transferID      string
 	transferReqs    []superfacility.GlobusTransferRequest
 	transferResults map[string][]superfacility.GlobusTransferResult
+}
+
+type fakeGlobusClient struct {
+	mu          sync.Mutex
+	operations  *[]string
+	transferID  string
+	requests    []globusapi.TransferRequest
+	taskResults map[string][]globusapi.Task
+}
+
+func (f *fakeGlobusClient) StartTransfer(ctx context.Context, req globusapi.TransferRequest) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "start-transfer")
+	}
+	f.requests = append(f.requests, req)
+	if f.transferID == "" {
+		return "transfer-1", nil
+	}
+	return f.transferID, nil
+}
+
+func (f *fakeGlobusClient) GetTask(ctx context.Context, transferID string) (globusapi.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "check-transfer")
+	}
+	results := f.taskResults[transferID]
+	if len(results) == 0 {
+		return globusapi.Task{TaskID: transferID, Status: "SUCCEEDED"}, nil
+	}
+	result := results[0]
+	if len(results) > 1 {
+		f.taskResults[transferID] = results[1:]
+	}
+	return result, nil
+}
+
+type staticGlobusClientResolver struct{ client GlobusTransferClient }
+
+func (r staticGlobusClientResolver) ClientForPod(context.Context, *corev1.Pod) (GlobusTransferClient, error) {
+	return r.client, nil
 }
 
 type sfapiUploadRequest struct {
@@ -149,6 +200,7 @@ func (r failingTokenResolver) TokenForPod(ctx context.Context, pod *corev1.Pod) 
 }
 
 func newTestProvider(client *fakeJobClient) *NerscProvider {
+	globusClient := &fakeGlobusClient{operations: &client.operations}
 	return &NerscProvider{
 		sfClientFactory: func(token string) jobClient {
 			client.mu.Lock()
@@ -156,10 +208,11 @@ func newTestProvider(client *fakeJobClient) *NerscProvider {
 			client.mu.Unlock()
 			return client
 		},
-		tokenResolver: staticTokenResolver("job-token"),
-		nodeName:      "perlmutter-vk",
-		podMap:        make(map[string]podJobState),
-		stagingMap:    make(map[string]*podStagingState),
+		tokenResolver:        staticTokenResolver("job-token"),
+		globusClientResolver: staticGlobusClientResolver{client: globusClient},
+		nodeName:             "perlmutter-vk",
+		podMap:               make(map[string]podJobState),
+		stagingMap:           make(map[string]*podStagingState),
 	}
 }
 
@@ -374,16 +427,21 @@ func TestCreatePodRequiresSuperfacilityToken(t *testing.T) {
 func TestCreatePodStagesInputBeforeSubmittingJob(t *testing.T) {
 	t.Setenv("USER", "alice")
 
-	client := &fakeJobClient{
-		submitJobID: "job-1",
-		transferID:  "input-transfer",
-		transferResults: map[string][]superfacility.GlobusTransferResult{
-			"input-transfer": {{GlobusUUID: "input-transfer", Status: "SUCCEEDED"}},
+	client := &fakeJobClient{submitJobID: "job-1"}
+	provider := newTestProvider(client)
+	globusClient := &fakeGlobusClient{
+		operations: &client.operations,
+		transferID: "input-transfer",
+		taskResults: map[string][]globusapi.Task{
+			"input-transfer": {{TaskID: "input-transfer", Status: "SUCCEEDED"}},
 		},
 	}
-	provider := newTestProvider(client)
+	provider.globusClientResolver = staticGlobusClientResolver{client: globusClient}
 	pod := testPod()
-	pod.Annotations[annotationInputSource] = "globus://dtn/global/cfs/cdirs/m1234/input"
+	pod.Annotations[annotationScratchBase] = "/pscratch/sd/a/alice/vk-provider-nersc"
+	pod.Annotations[annotationGlobusCredentialSecretName] = "globus-client"
+	pod.Annotations[annotationGlobusStagingCollectionID] = testStagingCollectionID
+	pod.Annotations[annotationInputSource] = "globus://" + testSourceCollectionID + "/global/cfs/cdirs/m1234/input"
 	pod.Annotations[annotationInputVolume] = "data"
 	pod.Spec.Volumes = []corev1.Volume{{Name: "data"}, {Name: "work"}}
 	pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "data", MountPath: "/mnt/data"}}
@@ -394,18 +452,18 @@ func TestCreatePodStagesInputBeforeSubmittingJob(t *testing.T) {
 	if got, want := strings.Join(client.operations, ","), "start-transfer,check-transfer,submit"; got != want {
 		t.Fatalf("operations = %s, want %s", got, want)
 	}
-	if len(client.transferReqs) != 1 {
-		t.Fatalf("transfer request count = %d, want 1", len(client.transferReqs))
+	if len(globusClient.requests) != 1 {
+		t.Fatalf("transfer request count = %d, want 1", len(globusClient.requests))
 	}
-	req := client.transferReqs[0]
-	if req.SourceUUID != "dtn" || req.TargetUUID != "perlmutter" {
-		t.Fatalf("endpoints = %s -> %s, want dtn -> perlmutter", req.SourceUUID, req.TargetUUID)
+	req := globusClient.requests[0]
+	if req.SourceCollection != testSourceCollectionID || req.DestinationCollection != testStagingCollectionID {
+		t.Fatalf("collections = %s -> %s", req.SourceCollection, req.DestinationCollection)
 	}
-	if req.SourceDir != "/global/cfs/cdirs/m1234/input" {
-		t.Fatalf("source dir = %q", req.SourceDir)
+	if req.SourcePath != "/global/cfs/cdirs/m1234/input" {
+		t.Fatalf("source path = %q", req.SourcePath)
 	}
-	if req.TargetDir != "$SCRATCH/vk-provider-nersc/demo/data" {
-		t.Fatalf("target dir = %q", req.TargetDir)
+	if req.DestinationPath != "/pscratch/sd/a/alice/vk-provider-nersc/demo/data" {
+		t.Fatalf("destination path = %q", req.DestinationPath)
 	}
 }
 
@@ -456,18 +514,22 @@ func TestCreatePodStagesInputWithSFAPITransferMode(t *testing.T) {
 func TestGetPodStatusStagesOutputAfterJobSucceeds(t *testing.T) {
 	t.Setenv("USER", "alice")
 
-	client := &fakeJobClient{
-		submitJobID: "job-1",
-		statusByJob: map[string]string{"job-1": "completed"},
-		transferID:  "output-transfer",
-		transferResults: map[string][]superfacility.GlobusTransferResult{
-			"output-transfer": {{GlobusUUID: "output-transfer", Status: "SUCCEEDED"}},
+	client := &fakeJobClient{submitJobID: "job-1", statusByJob: map[string]string{"job-1": "completed"}}
+	provider := newTestProvider(client)
+	globusClient := &fakeGlobusClient{
+		operations: &client.operations,
+		transferID: "output-transfer",
+		taskResults: map[string][]globusapi.Task{
+			"output-transfer": {{TaskID: "output-transfer", Status: "SUCCEEDED"}},
 		},
 	}
-	provider := newTestProvider(client)
+	provider.globusClientResolver = staticGlobusClientResolver{client: globusClient}
 	pod := testPod()
+	pod.Annotations[annotationScratchBase] = "/pscratch/sd/a/alice/vk-provider-nersc"
+	pod.Annotations[annotationGlobusCredentialSecretName] = "globus-client"
+	pod.Annotations[annotationGlobusStagingCollectionID] = testStagingCollectionID
 	pod.Annotations[annotationStageOut] = "true"
-	pod.Annotations[annotationOutputDest] = "globus://dtn/global/cfs/cdirs/m1234/output"
+	pod.Annotations[annotationOutputDest] = "globus://" + testDestinationCollectionID + "/global/cfs/cdirs/m1234/output"
 	pod.Annotations[annotationOutputVolume] = "results"
 	pod.Spec.Volumes = []corev1.Volume{{Name: "data"}, {Name: "results"}}
 	pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "results", MountPath: "/mnt/results"}}
@@ -482,18 +544,18 @@ func TestGetPodStatusStagesOutputAfterJobSucceeds(t *testing.T) {
 	if status.Phase != corev1.PodSucceeded || status.Reason != "StageOutComplete" {
 		t.Fatalf("status = %s/%s, want Succeeded/StageOutComplete", status.Phase, status.Reason)
 	}
-	if len(client.transferReqs) != 1 {
-		t.Fatalf("transfer request count = %d, want 1", len(client.transferReqs))
+	if len(globusClient.requests) != 1 {
+		t.Fatalf("transfer request count = %d, want 1", len(globusClient.requests))
 	}
-	req := client.transferReqs[0]
-	if req.SourceUUID != "perlmutter" || req.TargetUUID != "dtn" {
-		t.Fatalf("endpoints = %s -> %s, want perlmutter -> dtn", req.SourceUUID, req.TargetUUID)
+	req := globusClient.requests[0]
+	if req.SourceCollection != testStagingCollectionID || req.DestinationCollection != testDestinationCollectionID {
+		t.Fatalf("collections = %s -> %s", req.SourceCollection, req.DestinationCollection)
 	}
-	if req.SourceDir != "$SCRATCH/vk-provider-nersc/demo/results" {
-		t.Fatalf("source dir = %q", req.SourceDir)
+	if req.SourcePath != "/pscratch/sd/a/alice/vk-provider-nersc/demo/results" {
+		t.Fatalf("source path = %q", req.SourcePath)
 	}
-	if req.TargetDir != "/global/cfs/cdirs/m1234/output" {
-		t.Fatalf("target dir = %q", req.TargetDir)
+	if req.DestinationPath != "/global/cfs/cdirs/m1234/output" {
+		t.Fatalf("destination path = %q", req.DestinationPath)
 	}
 }
 
@@ -545,7 +607,10 @@ func TestGetPodStatusStagesOutputWithSFAPITransferMode(t *testing.T) {
 func TestCreatePodRequiresStageVolumeWhenStagingWithMultipleVolumes(t *testing.T) {
 	provider := newTestProvider(&fakeJobClient{})
 	pod := testPod()
-	pod.Annotations[annotationInputSource] = "globus://dtn/global/cfs/cdirs/m1234/input"
+	pod.Annotations[annotationScratchBase] = "/pscratch/sd/a/alice/vk-provider-nersc"
+	pod.Annotations[annotationGlobusCredentialSecretName] = "globus-client"
+	pod.Annotations[annotationGlobusStagingCollectionID] = testStagingCollectionID
+	pod.Annotations[annotationInputSource] = "globus://" + testSourceCollectionID + "/global/cfs/cdirs/m1234/input"
 	pod.Spec.Volumes = []corev1.Volume{{Name: "data"}, {Name: "work"}}
 
 	err := provider.CreatePod(context.Background(), pod)

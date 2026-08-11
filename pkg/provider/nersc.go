@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	globusapi "vk-provider-nersc/pkg/globus"
 	"vk-provider-nersc/pkg/scripts"
 	"vk-provider-nersc/pkg/superfacility"
 )
@@ -24,6 +25,7 @@ import (
 type NerscProvider struct {
 	sfClientFactory      jobClientFactory
 	tokenResolver        TokenResolver
+	globusClientResolver GlobusClientResolver
 	nodeName             string
 	nodeAddress          string
 	localTransferRoot    string
@@ -44,8 +46,6 @@ type jobClient interface {
 	UploadFile(context.Context, string, string, string, io.Reader) error
 	RunCommand(context.Context, string, string) (string, error)
 	DownloadFile(context.Context, string, string) ([]byte, error)
-	StartGlobusTransfer(context.Context, superfacility.GlobusTransferRequest) (superfacility.GlobusTransfer, error)
-	CheckGlobusTransfer(context.Context, string) (superfacility.GlobusTransferResult, error)
 }
 
 type TokenResolver interface {
@@ -67,7 +67,6 @@ const (
 	annotationStageVolume     = "nersc.sf/stageVolume"
 	annotationInputVolume     = "nersc.sf/inputVolume"
 	annotationOutputVolume    = "nersc.sf/outputVolume"
-	annotationGlobusUsername  = "nersc.sf/globusUsername"
 )
 
 type podJobState struct {
@@ -85,7 +84,7 @@ type podStagingState struct {
 	outputTransferID string
 	outputStatus     transferStatus
 	outputError      string
-	outputRequest    *superfacility.GlobusTransferRequest
+	outputRequest    *globusapi.TransferRequest
 	outputDest       *globusLocation
 	outputLocalPath  string
 	outputSourceDir  string
@@ -158,6 +157,10 @@ func (p *NerscProvider) SetLocalTransferRoot(root string) {
 	if root != "" {
 		p.localTransferRoot = root
 	}
+}
+
+func (p *NerscProvider) SetGlobusClientResolver(resolver GlobusClientResolver) {
+	p.globusClientResolver = resolver
 }
 
 func VirtualNodeLabels(nodeName string) map[string]string {

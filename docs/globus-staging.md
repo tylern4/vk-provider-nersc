@@ -1,38 +1,85 @@
-# Using Globus for Data Staging
+# Using the Globus APIs for Data Staging
 
 ## Overview
-NERSC's Superfacility API supports data transfers via Globus endpoints.
+
+Globus staging talks directly to Globus Auth and the Globus Transfer API. SFAPI is still used to submit and monitor the Perlmutter Slurm job, but it is no longer involved in Globus transfers.
+
+The provider uses an OAuth 2.0 client-credentials grant. Register a confidential Globus application, create a client secret, and grant its client identity (`<client-id>@clients.auth.globus.org`) access to both collections and filesystem paths used by the transfer.
+
+Create a workload-namespaced Secret in either supported format:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: globus-client
+type: Opaque
+stringData:
+  globus.json: |
+    {
+      "client_id": "<globus-client-id>",
+      "client_secret": "<globus-client-secret>"
+    }
+```
+
+The Secret may instead contain separate `client_id` and `client_secret` keys. Globus access tokens are obtained from Globus Auth, cached in memory until shortly before expiry, and never included in a Slurm script.
 
 ## Stage-In
-Annotate your Pod:
+
 ```yaml
 metadata:
   annotations:
     nersc.sf/credentialSecretName: "sfapi-client"
-    nersc.sf/inputSource: "globus://<endpoint-id>/path/to/input"
+    nersc.sf/transferMode: "globus"
+    nersc.sf/scratchBase: "/pscratch/sd/a/alice/vk-provider-nersc"
+    nersc.sf/inputSource: "globus://<source-collection-id>/path/to/input"
     nersc.sf/inputVolume: "data"
+    globus.api/credentialSecretName: "globus-client"
+    globus.api/stagingCollectionID: "<nersc-collection-id>"
 ```
+
 VK will:
-1. Create a transfer request via Superfacility API
-2. Wait until data is staged into the workload scratch path under `$SCRATCH/vk-provider-nersc/<pod>/<volume>`
-3. Mount the directory in your container
+
+1. Obtain a Transfer API access token from Globus Auth.
+2. Submit a recursive transfer from the source collection into `/pscratch/.../<pod>/<volume>` on the configured NERSC staging collection.
+3. Poll the Globus task until it succeeds, then submit the Slurm job and mount the staged directory.
 
 ## Stage-Out
+
 ```yaml
 metadata:
   annotations:
     nersc.sf/credentialSecretName: "sfapi-client"
-    nersc.sf/outputDest: "globus://<endpoint-id>/path/to/output"
-    nersc.sf/stageOut: "true"
+    nersc.sf/transferMode: "globus"
+    nersc.sf/scratchBase: "/pscratch/sd/a/alice/vk-provider-nersc"
+    nersc.sf/outputDest: "globus://<destination-collection-id>/path/to/output"
     nersc.sf/outputVolume: "data"
+    nersc.sf/stageOut: "true"
+    globus.api/credentialSecretName: "globus-client"
+    globus.api/stagingCollectionID: "<nersc-collection-id>"
 ```
-VK will:
-1. Monitor job completion
-2. Transfer output data back via Globus
 
-## Tips
-- Omit staging annotations when input and output already live on scratch and should remain there.
-- The per-workload Superfacility API credential Secret must reference a client with Globus enabled.
-- With multiple volumes, set `nersc.sf/inputVolume`, `nersc.sf/outputVolume`, or shared `nersc.sf/stageVolume`.
-- Ensure your Globus endpoint is accessible from NERSC.
-- Large transfers may require increasing VK's transfer timeout.
+After the Slurm job succeeds, VK submits the output transfer and keeps the pod in `Running` with reason `StageOutRunning` until the Globus task completes.
+
+## Annotations
+
+| Annotation | Required | Description |
+| --- | --- | --- |
+| `globus.api/credentialSecretName` | For Globus staging | Secret in the workload namespace containing Globus client credentials. |
+| `globus.api/credentialSecretKey` | No | JSON credential key; defaults to `globus.json`. If absent, separate `client_id` and `client_secret` keys are read. |
+| `globus.api/stagingCollectionID` | For Globus staging | Globus collection UUID exposing the concrete NERSC scratch path. |
+| `globus.api/scope` | No | Globus Auth scope string. Defaults to `urn:globus:auth:scope:transfer.api.globus.org:all`. Use the `required_scopes` returned by a `ConsentRequired` error for GCS v5 mapped collections. |
+| `nersc.sf/scratchBase` | For Globus staging | Concrete absolute path visible through the staging collection. Shell expressions such as `$SCRATCH` cannot be sent to the Transfer API. |
+| `nersc.sf/inputSource` | For stage-in | `globus://<collection-uuid>/<collection-relative-path>`. |
+| `nersc.sf/outputDest` | When stage-out is enabled | `globus://<collection-uuid>/<collection-relative-path>`. |
+| `nersc.sf/stageOut` | No | Set to `true` to enable stage-out after a successful job. |
+| `nersc.sf/inputVolume` | With multiple volumes | Volume whose scratch path receives input. |
+| `nersc.sf/outputVolume` | With multiple volumes | Volume whose scratch path supplies output. |
+| `nersc.sf/stageVolume` | No | Shared fallback for the input and output volume. |
+
+## Collection access
+
+- Use collection UUIDs, not SFAPI shortcuts such as `dtn`, `hpss`, or `perlmutter`.
+- The client identity must have permission on both source and destination collections and the underlying paths. NERSC mapped collections may require coordination with NERSC or a collection configured for the application identity.
+- GCS v5 mapped collections can require dependent `data_access` scopes. If Globus returns `ConsentRequired`, copy its `required_scopes` value to `globus.api/scope` after ensuring the client identity is authorized.
+- Omit staging annotations when inputs and outputs already reside on scratch.

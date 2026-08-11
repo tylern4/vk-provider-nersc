@@ -6,7 +6,7 @@ This project implements a **Virtual Kubelet provider** that connects NERSC's **P
 - NERSC **Superfacility API**
 - **Podman-HPC** for container execution
 - Slurm job submission
-- Optional Globus **data staging** via Superfacility API
+- Optional Globus **data staging** via the Globus Auth and Transfer APIs
 - **PVC integration**
 - **StatefulSet-aware** scratch paths and per-replica staging
 
@@ -20,7 +20,7 @@ It allows Kubernetes workloads (Pods, Jobs, StatefulSets) to be scheduled onto P
 - Run containers with Podman-HPC on Perlmutter
 - Monitor job status and map to Pod phases
 - Retrieve logs from HPC jobs
-- Optional Globus stage-in/out via Superfacility API annotations
+- Optional Globus stage-in/out via direct Globus API integration
 - Slurm resource annotations for multi-node jobs
 - PVC integration for volume mounts
 - StatefulSet-aware scratch paths and per-replica staging
@@ -375,8 +375,11 @@ spec:
       annotations:
         nersc.slurm/account: "m1234"
         nersc.sf/credentialSecretName: "sfapi-client"
-        nersc.sf/inputSource: "globus://endpoint-id/path/to/data"
-        nersc.sf/outputDest: "globus://endpoint-id/path/to/output"
+        nersc.sf/scratchBase: "/pscratch/sd/a/alice/vk-provider-nersc"
+        nersc.sf/inputSource: "globus://source-collection-id/path/to/data"
+        nersc.sf/outputDest: "globus://destination-collection-id/path/to/output"
+        globus.api/credentialSecretName: "globus-client"
+        globus.api/stagingCollectionID: "nersc-collection-id"
         nersc.sf/stageOut: "true"
     spec:
       nodeSelector:
@@ -408,9 +411,12 @@ metadata:
   annotations:
     nersc.sf/credentialSecretName: "sfapi-client"
     nersc.sf/transferMode: "globus"
-    nersc.sf/inputSource: "globus://endpoint-id/path/to/input"
-    nersc.sf/outputDest: "globus://endpoint-id/path/to/output"
+    nersc.sf/scratchBase: "/pscratch/sd/a/alice/vk-provider-nersc"
+    nersc.sf/inputSource: "globus://source-collection-id/path/to/input"
+    nersc.sf/outputDest: "globus://destination-collection-id/path/to/output"
     nersc.sf/stageOut: "true"
+    globus.api/credentialSecretName: "globus-client"
+    globus.api/stagingCollectionID: "nersc-collection-id"
 ```
 
 VK will:
@@ -419,9 +425,9 @@ VK will:
 3. Start output staging to `nersc.sf/outputDest` after the Slurm job succeeds when `nersc.sf/stageOut` is `true`
 4. Keep the pod in `Running` with reason `StageOutRunning` until output transfer completes
 
-Globus URIs use the form `globus://<endpoint>/<absolute/path>`. The endpoint can be a Globus UUID or a NERSC shortcut supported by the Superfacility API, such as `dtn`, `hpss`, or `perlmutter`.
+Globus URIs use the form `globus://<collection-uuid>/<collection-relative-path>`. Direct API mode requires Globus collection UUIDs; SFAPI shortcuts such as `dtn`, `hpss`, and `perlmutter` are not supported.
 
-The workload's Superfacility API client credentials must have the optional Globus capability enabled. If staging annotations are present but Globus is not enabled for that SFAPI client, stage-in fails before compute submission or stage-out marks the pod failed with the transfer error.
+Globus credentials are separate from the SFAPI credentials used for job submission. The provider reads a confidential Globus application's `client_id` and `client_secret` from the workload-namespaced `globus.api/credentialSecretName` Secret, obtains a Transfer API token with the OAuth client-credentials grant, and caches it only in memory. The application's client identity must be authorized on both collections and underlying paths. See [Globus staging](docs/globus-staging.md) for Secret formats and GCS v5 dependent scopes.
 
 Set `nersc.sf/transferMode: "sfapi"` to use the Superfacility API file utilities instead of Globus. This mode supports single-file upload/download between a provider-local directory and Perlmutter, so the provider deployment must set `SFAPI_TRANSFER_LOCAL_ROOT` through the Helm `sfapiTransferLocalRoot` value and mount any shared Airflow/provider volume at that path. Because SFAPI utility paths are concrete remote filesystem paths, `nersc.sf/scratchBase` must also be set to an absolute NERSC path such as `/pscratch/sd/a/alice/vk-provider-nersc`; `$SCRATCH` shell expansion is not available to the upload/download API.
 
@@ -445,14 +451,17 @@ In SFAPI mode, `inputSource` and `outputDest` are paths under `SFAPI_TRANSFER_LO
 | `nersc.sf/credentialSecretName` | Yes | Kubernetes Secret in the workload namespace containing SFAPI client credentials for this pod. |
 | `nersc.sf/credentialSecretKey` | No | Secret data key containing `{"client_id": "...", "secret": {...}}`; defaults to `sf_api.json`. |
 | `nersc.sf/transferMode` | No | `globus` (default) or `sfapi`. |
-| `nersc.sf/scratchBase` | Required for `transferMode=sfapi` | Concrete absolute NERSC base path for per-pod scratch staging. Defaults to `$SCRATCH/vk-provider-nersc` for non-SFAPI modes. |
+| `nersc.sf/scratchBase` | Required for `transferMode=globus` or `sfapi` | Concrete absolute NERSC base path for per-pod scratch staging. Shell expansion is unavailable to either remote API. |
 | `nersc.sf/inputSource` | No | In Globus mode, a `globus://` source URI. In SFAPI mode, a provider-local file path under `SFAPI_TRANSFER_LOCAL_ROOT`. |
 | `nersc.sf/outputDest` | Required when `stageOut` is `true` | In Globus mode, a `globus://` destination URI. In SFAPI mode, a provider-local destination file path under `SFAPI_TRANSFER_LOCAL_ROOT`. |
 | `nersc.sf/stageOut` | No | Set to `true` to enable output staging. |
 | `nersc.sf/inputVolume` | Required for input staging with multiple volumes | Volume name whose scratch path should receive staged input. |
 | `nersc.sf/outputVolume` | Required for output staging with multiple volumes | Volume name whose scratch path should supply staged output. |
 | `nersc.sf/stageVolume` | No | Shared fallback volume name for both input and output staging. If omitted with one volume, that volume is used. If omitted with no volumes, the pod scratch base is used. |
-| `nersc.sf/globusUsername` | No | Optional Superfacility API `username` value for Globus transfers when the SFAPI client has permission to act for another user. |
+| `globus.api/credentialSecretName` | Required for Globus staging | Workload-namespaced Secret containing Globus client credentials. |
+| `globus.api/credentialSecretKey` | No | JSON key containing `{"client_id":"...","client_secret":"..."}`; defaults to `globus.json`. Separate `client_id` and `client_secret` keys are also supported. |
+| `globus.api/stagingCollectionID` | Required for Globus staging | Globus collection UUID exposing `nersc.sf/scratchBase`. |
+| `globus.api/scope` | No | Globus Auth scope; defaults to the Transfer API `all` scope. Set the dependent scope returned by `ConsentRequired` for mapped collections. |
 
 Current staging annotations are read from the pod template. PVCs are still supported as Kubernetes volumes, but PVC annotations are not read directly by this provider unless they are copied onto the pod.
 
@@ -463,6 +472,7 @@ Current staging annotations are read from the pod template. PVCs are still suppo
 See the [`examples/`](examples/) directory for:
 
 - `sfapi-client-secret.yaml` — per-workload Superfacility client credential Secret
+- `globus-client-secret.yaml` — per-workload Globus confidential-client Secret
 - `pod-simple.yaml` — basic pod
 - `pod-multi.yaml` — multi-container pod
 - `pod-pvc.yaml` — PVC with data staging

@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 
-	"vk-provider-nersc/pkg/superfacility"
+	globusapi "vk-provider-nersc/pkg/globus"
 )
 
 func buildStagingState(pod *corev1.Pod, jobScratchBase string, volumeScratchPaths map[string]string) (*podStagingState, error) {
@@ -34,11 +35,23 @@ func buildStagingState(pod *corev1.Pod, jobScratchBase string, volumeScratchPath
 		return nil, nil
 	}
 
-	if transferMode == stagingTransferModeSFAPI && strings.Contains(jobScratchBase, "$") {
+	if (transferMode == stagingTransferModeGlobus || transferMode == stagingTransferModeSFAPI) && (!path.IsAbs(jobScratchBase) || strings.Contains(jobScratchBase, "$")) {
 		return nil, fmt.Errorf("%s=%s requires %s to be a concrete absolute path, not %q", annotationTransferMode, transferMode, annotationScratchBase, jobScratchBase)
 	}
 
 	state := &podStagingState{transferMode: transferMode}
+	stagingCollectionID := getAnnotation(pod, annotationGlobusStagingCollectionID)
+	if transferMode == stagingTransferModeGlobus {
+		if getAnnotation(pod, annotationGlobusCredentialSecretName) == "" {
+			return nil, fmt.Errorf("%s is required for Globus staging", annotationGlobusCredentialSecretName)
+		}
+		if stagingCollectionID == "" {
+			return nil, fmt.Errorf("%s is required for Globus staging", annotationGlobusStagingCollectionID)
+		}
+		if _, err := uuid.Parse(stagingCollectionID); err != nil {
+			return nil, fmt.Errorf("%s must be a Globus collection UUID: %w", annotationGlobusStagingCollectionID, err)
+		}
+	}
 	if inputSource != "" {
 		inputStagePath, err := resolveStagePath(pod, jobScratchBase, volumeScratchPaths, annotationInputVolume)
 		if err != nil {
@@ -79,12 +92,13 @@ func buildStagingState(pod *corev1.Pod, jobScratchBase string, volumeScratchPath
 			}
 			state.outputDest = output
 			state.outputSourceDir = outputStagePath
-			state.outputRequest = &superfacility.GlobusTransferRequest{
-				SourceUUID: "perlmutter",
-				TargetUUID: output.Endpoint,
-				SourceDir:  outputStagePath,
-				TargetDir:  output.Path,
-				Username:   getAnnotation(pod, annotationGlobusUsername),
+			state.outputRequest = &globusapi.TransferRequest{
+				SourceCollection:      stagingCollectionID,
+				DestinationCollection: output.Endpoint,
+				SourcePath:            outputStagePath,
+				DestinationPath:       output.Path,
+				Label:                 "vk-provider-nersc stage-out " + podKey(pod),
+				Recursive:             true,
 			}
 		case stagingTransferModeSFAPI:
 			outputPath, err := parseLocalTransferPath(outputDest)
@@ -126,6 +140,12 @@ func parseGlobusLocation(raw string) (*globusLocation, error) {
 	}
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("missing Globus endpoint")
+	}
+	if parsed.User != nil || parsed.Port() != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("Globus URI must contain only a collection UUID and path")
+	}
+	if _, err := uuid.Parse(parsed.Host); err != nil {
+		return nil, fmt.Errorf("Globus collection must be a UUID: %w", err)
 	}
 	if parsed.Path == "" || parsed.Path == "/" {
 		return nil, fmt.Errorf("missing Globus path")
@@ -219,12 +239,17 @@ func (p *NerscProvider) stageInput(ctx context.Context, client jobClient, key st
 	case staging == nil:
 		return nil
 	case staging.inputSource != nil:
-		transferID, err := p.startAndWaitForTransfer(ctx, client, superfacility.GlobusTransferRequest{
-			SourceUUID: staging.inputSource.Endpoint,
-			TargetUUID: "perlmutter",
-			SourceDir:  staging.inputSource.Path,
-			TargetDir:  staging.inputTargetDir,
-			Username:   getAnnotation(pod, annotationGlobusUsername),
+		globusClient, err := p.globusClientForPod(ctx, pod)
+		if err != nil {
+			return fmt.Errorf("stage input for pod %s: %w", key, err)
+		}
+		transferID, err := p.startAndWaitForTransfer(ctx, globusClient, globusapi.TransferRequest{
+			SourceCollection:      staging.inputSource.Endpoint,
+			DestinationCollection: getAnnotation(pod, annotationGlobusStagingCollectionID),
+			SourcePath:            staging.inputSource.Path,
+			DestinationPath:       staging.inputTargetDir,
+			Label:                 "vk-provider-nersc stage-in " + key,
+			Recursive:             true,
 		})
 		if err != nil {
 			return fmt.Errorf("stage input for pod %s: %w", key, err)
@@ -262,13 +287,11 @@ func (p *NerscProvider) stageInput(ctx context.Context, client jobClient, key st
 	return nil
 }
 
-func (p *NerscProvider) startAndWaitForTransfer(ctx context.Context, client jobClient, req superfacility.GlobusTransferRequest) (string, error) {
-	transfer, err := client.StartGlobusTransfer(ctx, req)
+func (p *NerscProvider) startAndWaitForTransfer(ctx context.Context, client GlobusTransferClient, req globusapi.TransferRequest) (string, error) {
+	transferID, err := client.StartTransfer(ctx, req)
 	if err != nil {
 		return "", err
 	}
-
-	transferID := transfer.TransferID()
 	timeout := p.transferTimeout
 	if timeout <= 0 {
 		timeout = defaultTransferTimeout
@@ -282,7 +305,7 @@ func (p *NerscProvider) startAndWaitForTransfer(ctx context.Context, client jobC
 	defer cancel()
 
 	for {
-		result, err := client.CheckGlobusTransfer(waitCtx, transferID)
+		result, err := client.GetTask(waitCtx, transferID)
 		if err != nil {
 			return transferID, err
 		}
@@ -305,13 +328,6 @@ func (p *NerscProvider) startAndWaitForTransfer(ctx context.Context, client jobC
 }
 
 func (p *NerscProvider) reconcileStageOut(ctx context.Context, key, token string) corev1.PodStatus {
-	client, err := p.clientForToken(token)
-	if err != nil {
-		msg := fmt.Sprintf("create Superfacility client: %v", err)
-		p.setStageOutStatus(key, transferFailed, "", msg)
-		return podStatus(corev1.PodFailed, "StageOutFailed", msg)
-	}
-
 	staging, status, outputErr := p.stageOutSnapshot(key)
 	switch status {
 	case transferSucceeded:
@@ -323,25 +339,42 @@ func (p *NerscProvider) reconcileStageOut(ctx context.Context, key, token string
 	}
 
 	if staging.transferMode == stagingTransferModeSFAPI {
+		client, err := p.clientForToken(token)
+		if err != nil {
+			msg := fmt.Sprintf("create Superfacility client: %v", err)
+			p.setStageOutStatus(key, transferFailed, "", msg)
+			return podStatus(corev1.PodFailed, "StageOutFailed", msg)
+		}
 		return p.reconcileSFAPIStageOut(ctx, key, client, staging, status)
+	}
+	state, exists := p.jobStateForPodKey(key)
+	if !exists || state.pod == nil {
+		msg := "stored pod is unavailable for Globus stage-out"
+		p.setStageOutStatus(key, transferFailed, "", msg)
+		return podStatus(corev1.PodFailed, "StageOutFailed", msg)
+	}
+	globusClient, err := p.globusClientForPod(ctx, state.pod)
+	if err != nil {
+		msg := fmt.Sprintf("create Globus client: %v", err)
+		p.setStageOutStatus(key, transferFailed, "", msg)
+		return podStatus(corev1.PodFailed, "StageOutFailed", msg)
 	}
 
 	req := *staging.outputRequest
 	transferID := staging.outputTransferID
 	if status == transferNotStarted {
 		p.setStageOutStatus(key, transferStarting, "", "")
-		transfer, err := client.StartGlobusTransfer(ctx, req)
+		transferID, err = globusClient.StartTransfer(ctx, req)
 		if err != nil {
 			msg := fmt.Sprintf("start output transfer: %v", err)
 			p.setStageOutStatus(key, transferFailed, "", msg)
 			return podStatus(corev1.PodFailed, "StageOutFailed", msg)
 		}
-		transferID = transfer.TransferID()
 		p.setStageOutStatus(key, transferRunning, transferID, "")
 		log.Printf("Pod %s output stage-out started as Globus transfer %s", key, transferID)
 	}
 
-	result, err := client.CheckGlobusTransfer(ctx, transferID)
+	result, err := globusClient.GetTask(ctx, transferID)
 	if err != nil {
 		msg := fmt.Sprintf("check output transfer %s: %v", transferID, err)
 		p.setStageOutStatus(key, transferFailed, transferID, msg)
@@ -359,6 +392,13 @@ func (p *NerscProvider) reconcileStageOut(ctx context.Context, key, token string
 	}
 
 	return podStatus(corev1.PodRunning, "StageOutRunning", fmt.Sprintf("Output transfer %s is still running", transferID))
+}
+
+func (p *NerscProvider) globusClientForPod(ctx context.Context, pod *corev1.Pod) (GlobusTransferClient, error) {
+	if p.globusClientResolver == nil {
+		return nil, fmt.Errorf("Globus client resolver is not configured")
+	}
+	return p.globusClientResolver.ClientForPod(ctx, pod)
 }
 
 func (p *NerscProvider) reconcileSFAPIStageOut(ctx context.Context, key string, client jobClient, staging podStagingState, status transferStatus) corev1.PodStatus {
