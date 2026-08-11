@@ -20,6 +20,13 @@ kubectl create secret generic globus-client \
   --from-literal=client_secret="$GLOBUS_CLIENT_SECRET"
 ```
 
+To use an existing SFAPI bearer token instead of client credentials:
+
+```bash
+kubectl create secret generic sfapi-bearer \
+  --from-literal=access_token="$SFAPI_ACCESS_TOKEN"
+```
+
 Alternatively, create the same referenced Secret from a Transfer API bearer token:
 
 ```bash

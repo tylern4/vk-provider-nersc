@@ -129,6 +129,21 @@ metadata:
 
 `nersc.sf/credentialSecretKey` defaults to `sf_api.json`. The provider also supports Secrets with separate `client_id` and `jwk` keys. Access tokens are minted and refreshed in memory and are never written into generated Slurm scripts.
 
+An existing SFAPI access token can be used directly instead. Store the raw token under `access_token`, `bearer_token`, or the backwards-compatible `token` key:
+
+```bash
+kubectl create secret generic sfapi-bearer \
+  --from-literal=access_token="$SFAPI_ACCESS_TOKEN"
+```
+
+```yaml
+metadata:
+  annotations:
+    nersc.sf/credentialSecretName: "sfapi-bearer"
+```
+
+Bearer tokens can also be stored in `sf_api.json` as `{"access_token":"..."}`. To use any custom raw Secret key, set `nersc.sf/credentialSecretKey` to that key. Supplied bearer tokens are used as-is and must be rotated before they expire.
+
 ---
 
 ## Slurm Resource Annotations
@@ -305,7 +320,7 @@ Runtime layout
 1. The Kubernetes API server stores the `Job`; the Kubernetes Job controller creates a Pod from the job template.
 2. The Kubernetes scheduler sees `nodeSelector.kubernetes.io/hostname: perlmutter-vk` and binds the Pod to the virtual node served by this provider.
 3. Virtual Kubelet calls the NERSC provider's `CreatePod` for that Pod.
-4. The provider reads `nersc.sf/credentialSecretName` from the Pod annotations and loads that Secret from the workload namespace. It exchanges the SFAPI client credentials for a short-lived access token used only for this workload's Superfacility API calls.
+4. The provider reads `nersc.sf/credentialSecretName` from the Pod annotations and loads that Secret from the workload namespace. It either uses the supplied SFAPI bearer token or exchanges the SFAPI client credentials for a short-lived access token used only for this workload's Superfacility API calls.
 5. The provider translates the Pod into a Slurm batch script. The annotations above render allocation directives for two GPU nodes and a rank launcher equivalent to:
 
 ```bash
@@ -448,8 +463,8 @@ In SFAPI mode, `inputSource` and `outputDest` are paths under `SFAPI_TRANSFER_LO
 
 | Annotation | Required | Description |
 | --- | --- | --- |
-| `nersc.sf/credentialSecretName` | Yes | Kubernetes Secret in the workload namespace containing SFAPI client credentials for this pod. |
-| `nersc.sf/credentialSecretKey` | No | Secret data key containing `{"client_id": "...", "secret": {...}}`; defaults to `sf_api.json`. |
+| `nersc.sf/credentialSecretName` | Yes | Kubernetes Secret containing SFAPI client credentials or a bearer token for this pod. |
+| `nersc.sf/credentialSecretKey` | No | Secret key containing SFAPI credential JSON or a raw bearer token; defaults to `sf_api.json`, with automatic fallback to `access_token`, `bearer_token`, or `token`. |
 | `nersc.sf/transferMode` | No | `globus` (default) or `sfapi`. |
 | `nersc.sf/scratchBase` | Required for `transferMode=globus` or `sfapi` | Concrete absolute NERSC base path for per-pod scratch staging. Shell expansion is unavailable to either remote API. |
 | `nersc.sf/inputSource` | No | In Globus mode, a `globus://` source URI. In SFAPI mode, a provider-local file path under `SFAPI_TRANSFER_LOCAL_ROOT`. |
@@ -472,6 +487,7 @@ Current staging annotations are read from the pod template. PVCs are still suppo
 See the [`examples/`](examples/) directory for:
 
 - `sfapi-client-secret.yaml` — per-workload Superfacility client credential Secret
+- `sfapi-bearer-token-secret.yaml` — existing Superfacility API bearer token Secret
 - `globus-client-secret.yaml` — per-workload Globus confidential-client Secret
 - `globus-bearer-token-secret.yaml` — existing Transfer API bearer token Secret
 - `globus-refresh-token-secret.yaml` — refresh token plus confidential-client Secret

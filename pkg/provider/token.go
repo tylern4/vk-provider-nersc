@@ -23,7 +23,9 @@ const (
 	defaultJWKSecretKey        = "jwk"
 	defaultSecretJWKKey        = "secret"
 
-	defaultTokenSecretKey = "token"
+	defaultAccessTokenSecretKey = "access_token"
+	defaultBearerTokenSecretKey = "bearer_token"
+	defaultTokenSecretKey       = "token"
 )
 
 type bearerTokenSource interface {
@@ -46,9 +48,12 @@ type cachedSecretTokenSource struct {
 }
 
 type sfapiCredentialFile struct {
-	ClientID string          `json:"client_id"`
-	Secret   json.RawMessage `json:"secret"`
-	JWK      json.RawMessage `json:"jwk"`
+	ClientID    string          `json:"client_id"`
+	Secret      json.RawMessage `json:"secret"`
+	JWK         json.RawMessage `json:"jwk"`
+	AccessToken string          `json:"access_token"`
+	BearerToken string          `json:"bearer_token"`
+	Token       string          `json:"token"`
 }
 
 type sfapiClientCredential struct {
@@ -109,7 +114,7 @@ func (r *SecretTokenResolver) TokenForPod(ctx context.Context, pod *corev1.Pod) 
 		return r.tokenForCredential(ctx, namespace, secret, credential)
 	}
 
-	if token, ok, tokenErr := legacyTokenFromSecret(secret, secretKey); ok || tokenErr != nil {
+	if token, ok, tokenErr := bearerTokenFromSecret(secret, secretKey); ok || tokenErr != nil {
 		if tokenErr != nil {
 			return "", tokenErr
 		}
@@ -237,18 +242,61 @@ func normalizeJWKJSON(raw json.RawMessage) ([]byte, error) {
 	return raw, nil
 }
 
-func legacyTokenFromSecret(secret *corev1.Secret, requestedKey string) (string, bool, error) {
-	key := requestedKey
-	if key == "" {
-		key = defaultTokenSecretKey
+func bearerTokenFromSecret(secret *corev1.Secret, requestedKey string) (string, bool, error) {
+	if secret == nil {
+		return "", false, fmt.Errorf("Superfacility credential secret is required")
 	}
-	tokenBytes, ok := secret.Data[key]
-	if !ok {
+	if requestedKey != "" {
+		data, ok := secret.Data[requestedKey]
+		if !ok {
+			return "", false, nil
+		}
+		return bearerTokenFromData(secret, requestedKey, data)
+	}
+
+	if data, ok := secret.Data[defaultCredentialSecretKey]; ok {
+		if token, found, err := bearerTokenFromData(secret, defaultCredentialSecretKey, data); found || err != nil {
+			return token, found, err
+		}
+	}
+	for _, key := range []string{defaultAccessTokenSecretKey, defaultBearerTokenSecretKey, defaultTokenSecretKey} {
+		if data, ok := secret.Data[key]; ok {
+			return validateBearerToken(secret, key, string(data))
+		}
+	}
+	return "", false, nil
+}
+
+func bearerTokenFromData(secret *corev1.Secret, key string, data []byte) (string, bool, error) {
+	if json.Valid(data) {
+		if token, found, err := bearerTokenFromJSON(secret, key, data); found || err != nil {
+			return token, found, err
+		}
+		var token string
+		if json.Unmarshal(data, &token) == nil {
+			return validateBearerToken(secret, key, token)
+		}
 		return "", false, nil
 	}
-	token := strings.TrimSpace(string(tokenBytes))
+	return validateBearerToken(secret, key, string(data))
+}
+
+func bearerTokenFromJSON(secret *corev1.Secret, key string, data []byte) (string, bool, error) {
+	var file sfapiCredentialFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return "", false, nil
+	}
+	token := firstNonEmpty(file.AccessToken, file.BearerToken, file.Token)
 	if token == "" {
-		return "", true, fmt.Errorf("Superfacility token secret %s/%s key %q is empty", secret.Namespace, secret.Name, key)
+		return "", false, nil
+	}
+	return validateBearerToken(secret, key, token)
+}
+
+func validateBearerToken(secret *corev1.Secret, key, raw string) (string, bool, error) {
+	token := strings.TrimSpace(raw)
+	if token == "" {
+		return "", true, fmt.Errorf("Superfacility bearer token secret %s/%s key %q is empty", secret.Namespace, secret.Name, key)
 	}
 	return token, true, nil
 }

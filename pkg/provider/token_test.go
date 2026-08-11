@@ -152,6 +152,88 @@ func TestSecretTokenResolverStillSupportsLegacyRawTokenSecret(t *testing.T) {
 	}
 }
 
+func TestSecretTokenResolverReadsSFAPIBearerTokenKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "access token", key: defaultAccessTokenSecretKey},
+		{name: "bearer token", key: defaultBearerTokenSecretKey},
+		{name: "token", key: defaultTokenSecretKey},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := fake.NewSimpleClientset(&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "sfapi-bearer", Namespace: "workloads"},
+				Data:       map[string][]byte{tt.key: []byte(" sfapi-access-token ")},
+			})
+			resolver := NewSecretTokenResolver(client.CoreV1())
+			resolver.tokenSourceFactory = func(string, []byte, string) (bearerTokenSource, error) {
+				t.Fatal("client credential token source should not be created")
+				return nil, nil
+			}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: "demo", Namespace: "workloads",
+				Annotations: map[string]string{annotationCredentialSecretName: "sfapi-bearer"},
+			}}
+
+			token, err := resolver.TokenForPod(context.Background(), pod)
+			if err != nil {
+				t.Fatalf("TokenForPod returned error: %v", err)
+			}
+			if token != "sfapi-access-token" {
+				t.Fatalf("token = %q", token)
+			}
+		})
+	}
+}
+
+func TestSecretTokenResolverReadsBearerTokenFromCredentialJSON(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "sfapi-bearer", Namespace: "workloads"},
+		Data: map[string][]byte{
+			defaultCredentialSecretKey: []byte(`{"access_token":"sfapi-access-token"}`),
+		},
+	})
+	resolver := NewSecretTokenResolver(client.CoreV1())
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "demo", Namespace: "workloads",
+		Annotations: map[string]string{annotationCredentialSecretName: "sfapi-bearer"},
+	}}
+
+	token, err := resolver.TokenForPod(context.Background(), pod)
+	if err != nil {
+		t.Fatalf("TokenForPod returned error: %v", err)
+	}
+	if token != "sfapi-access-token" {
+		t.Fatalf("token = %q", token)
+	}
+}
+
+func TestSecretTokenResolverReadsRawBearerTokenFromRequestedCredentialKey(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "sfapi-bearer", Namespace: "workloads"},
+		Data:       map[string][]byte{"my-token": []byte("sfapi-access-token")},
+	})
+	resolver := NewSecretTokenResolver(client.CoreV1())
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "demo", Namespace: "workloads",
+		Annotations: map[string]string{
+			annotationCredentialSecretName: "sfapi-bearer",
+			annotationCredentialSecretKey:  "my-token",
+		},
+	}}
+
+	token, err := resolver.TokenForPod(context.Background(), pod)
+	if err != nil {
+		t.Fatalf("TokenForPod returned error: %v", err)
+	}
+	if token != "sfapi-access-token" {
+		t.Fatalf("token = %q", token)
+	}
+}
+
 func TestSecretTokenResolverRequiresSecretAnnotation(t *testing.T) {
 	resolver := NewSecretTokenResolver(fake.NewSimpleClientset().CoreV1())
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"}}
