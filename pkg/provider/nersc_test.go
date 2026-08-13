@@ -325,7 +325,7 @@ func TestCreateGetLogsAndDeletePod(t *testing.T) {
 }
 
 func TestGetPodLogsFallsBackToOutputFileDownload(t *testing.T) {
-	outputPath := "/pscratch/sd/t/tylern/demo/demo.out"
+	outputPath := "/pscratch/sd/a/alice/demo/demo.out"
 	client := &fakeJobClient{
 		submitJobID:   "job-1",
 		statusByJob:   map[string]string{"job-1": "succeeded"},
@@ -334,12 +334,12 @@ func TestGetPodLogsFallsBackToOutputFileDownload(t *testing.T) {
 	}
 	provider := newTestProvider(client)
 	pod := testPod()
-	pod.Annotations[annotationScratchBase] = "/pscratch/sd/t/tylern"
+	pod.Annotations[annotationScratchBase] = "/pscratch/sd/a/alice"
 
 	if err := provider.CreatePod(context.Background(), pod); err != nil {
 		t.Fatalf("CreatePod returned error: %v", err)
 	}
-	if !strings.Contains(client.submitReq.Script, "#SBATCH --chdir=/pscratch/sd/t/tylern/demo") {
+	if !strings.Contains(client.submitReq.Script, "#SBATCH --chdir=/pscratch/sd/a/alice/demo") {
 		t.Fatalf("submitted script missing chdir directive:\n%s", client.submitReq.Script)
 	}
 
