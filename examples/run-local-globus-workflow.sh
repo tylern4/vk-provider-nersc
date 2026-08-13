@@ -9,8 +9,12 @@
 #   3. Submits a Pod to the virtual node that stages a source directory into
 #      NERSC scratch via Globus, runs a small container on Perlmutter, and
 #      prints up to 20 staged file paths.
-#   4. Polls the Pod until it succeeds or fails, then cleans up the Pod and
-#      temporary Secrets (unless KEEP_RESOURCES=1).
+#   4. Polls the Pod until it succeeds or fails, downloads the Slurm --output
+#      file through the SFAPI and prints it (kubectl logs is unreliable
+#      through the virtual kubelet), then cleans up the Pod and temporary
+#      Secrets (unless KEEP_RESOURCES=1).
+#
+# Requires: kubectl, sqlite3, curl, date, mktemp.
 #
 # All credentials are kept on disk with umask 077 and never placed on the
 # command line or echoed to the terminal.
@@ -91,6 +95,74 @@ require_safe_yaml_value() {
   esac
 }
 
+# Percent-encode a single path segment for use in a URL.
+urlencode() {
+  local string=$1 char i
+  for ((i = 0; i < ${#string}; i++)); do
+    char=${string:i:1}
+    case $char in
+      [A-Za-z0-9._~-]) printf '%s' "$char" ;;
+      *) printf '%%%02X' "'$char" ;;
+    esac
+  done
+}
+
+# Decode base64 from stdin with the right flag for the platform's base64 tool.
+base64_decode() {
+  if base64 --version >/dev/null 2>&1; then
+    base64 -d
+  else
+    base64 -D
+  fi
+}
+
+# Download the Slurm --output file through the SFAPI utilities/download
+# endpoint (the same mechanism the provider uses for its log fallback) and
+# print it. kubectl logs is unreliable here because the kube-apiserver cannot
+# reach the virtual node's kubelet endpoint, so the provider's GetPodLogs
+# fallback is never triggered. Returns non-zero when the file cannot be
+# fetched so callers can degrade gracefully.
+fetch_output_logs() {
+  local auth_header="${workflow_tmp}/auth-header"
+  local response="${workflow_tmp}/output-log.json"
+  local output_path="${NERSC_SCRATCH_BASE}/${pod_name}/${pod_name}.out"
+
+  # Keep the token off the command line; curl reads the header from a file
+  # created under the script's umask 077.
+  printf 'Authorization: Bearer %s' "$(cat "$SFAPI_TOKEN_FILE")" >"$auth_header"
+
+  # Mirror the provider's escapeRemotePath: keep the leading slash and encode
+  # each segment, so the endpoint receives /utilities/download/dtns/<path>.
+  local encoded_path=""
+  local path_rest=$output_path
+  if [[ $path_rest == /* ]]; then
+    encoded_path="/"
+    path_rest=${path_rest#/}
+  fi
+  local part
+  local IFS=/
+  for part in $path_rest; do
+    encoded_path+="$(urlencode "$part")/"
+  done
+  encoded_path=${encoded_path%/}
+
+  local url="https://api.nersc.gov/api/v1.2/utilities/download/dtns/${encoded_path}?binary=true"
+  local attempt file_field
+  for attempt in 1 2 3 4 5 6; do
+    if curl -fsS -H @"$auth_header" "$url" >"$response" 2>/dev/null; then
+      file_field=$(sed -n 's/^.*"file": *"\([^"]*\)".*$/\1/p' "$response")
+      if [[ -n $file_field ]] && printf '%s' "$file_field" | base64_decode; then
+        return 0
+      fi
+      echo "warning: unexpected SFAPI log response for ${output_path}: $(cat "$response" 2>/dev/null || true)" >&2
+      return 1
+    fi
+    [[ $attempt -lt 6 ]] && sleep 5
+  done
+  echo "warning: could not fetch output log ${output_path}" >&2
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Argument and prerequisite checks
 # ---------------------------------------------------------------------------
@@ -105,6 +177,7 @@ require_command kubectl
 require_command sqlite3
 require_command date
 require_command mktemp
+require_command curl
 
 # Required inputs
 require_value SLURM_ACCOUNT
@@ -190,7 +263,8 @@ cleanup() {
   set +e
   rm -f "${workflow_tmp}/token-rows" "${workflow_tmp}/client_id" \
     "${workflow_tmp}/client_secret" "${workflow_tmp}/refresh_token" \
-    "${workflow_tmp}/bearer_token" "${workflow_tmp}/pod.yaml"
+    "${workflow_tmp}/bearer_token" "${workflow_tmp}/pod.yaml" \
+    "${workflow_tmp}/auth-header" "${workflow_tmp}/output-log.json"
   rmdir "$workflow_tmp" 2>/dev/null
   if [[ $k8s_created -eq 1 && $KEEP_RESOURCES != 1 ]]; then
     kubectl delete pod "$pod_name" -n "$KUBE_NAMESPACE" --ignore-not-found --wait=false >/dev/null
@@ -372,12 +446,12 @@ while (( $(date +%s) < deadline )); do
   phase=$(kubectl get pod "$pod_name" -n "$KUBE_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   case $phase in
     Succeeded)
-      kubectl logs "$pod_name" -n "$KUBE_NAMESPACE" || true
+      fetch_output_logs || true
       echo "Workflow succeeded." >&2
       exit 0
       ;;
     Failed)
-      kubectl logs "$pod_name" -n "$KUBE_NAMESPACE" || true
+      fetch_output_logs || true
       kubectl describe pod "$pod_name" -n "$KUBE_NAMESPACE" >&2 || true
       die "workflow Pod failed"
       ;;
@@ -386,4 +460,5 @@ while (( $(date +%s) < deadline )); do
 done
 
 kubectl describe pod "$pod_name" -n "$KUBE_NAMESPACE" >&2 || true
+fetch_output_logs || true
 die "workflow timed out after ${WORKFLOW_TIMEOUT}s"
