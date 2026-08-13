@@ -46,10 +46,9 @@ type cachedSecretTokenSource struct {
 }
 
 type sfapiCredentialFile struct {
-	ClientID    string          `json:"client_id"`
-	Secret      json.RawMessage `json:"secret"`
-	JWK         json.RawMessage `json:"jwk"`
-	BearerToken string          `json:"bearer_token"`
+	ClientID string          `json:"client_id"`
+	Secret   json.RawMessage `json:"secret"`
+	JWK      json.RawMessage `json:"jwk"`
 }
 
 type sfapiClientCredential struct {
@@ -250,24 +249,14 @@ func bearerTokenFromSecret(secret *corev1.Secret, requestedKey string) (string, 
 		return bearerTokenFromData(secret, requestedKey, data)
 	}
 
-	if data, ok := secret.Data[defaultCredentialSecretKey]; ok {
-		if token, found, err := bearerTokenFromData(secret, defaultCredentialSecretKey, data); found || err != nil {
-			return token, found, err
-		}
-	}
-	for _, key := range []string{defaultBearerTokenSecretKey} {
-		if data, ok := secret.Data[key]; ok {
-			return validateBearerToken(secret, key, string(data))
-		}
+	if data, ok := secret.Data[defaultBearerTokenSecretKey]; ok {
+		return validateBearerToken(secret, defaultBearerTokenSecretKey, string(data))
 	}
 	return "", false, nil
 }
 
 func bearerTokenFromData(secret *corev1.Secret, key string, data []byte) (string, bool, error) {
 	if json.Valid(data) {
-		if token, found, err := bearerTokenFromJSON(secret, key, data); found || err != nil {
-			return token, found, err
-		}
 		var token string
 		if json.Unmarshal(data, &token) == nil {
 			return validateBearerToken(secret, key, token)
@@ -275,18 +264,6 @@ func bearerTokenFromData(secret *corev1.Secret, key string, data []byte) (string
 		return "", false, nil
 	}
 	return validateBearerToken(secret, key, string(data))
-}
-
-func bearerTokenFromJSON(secret *corev1.Secret, key string, data []byte) (string, bool, error) {
-	var file sfapiCredentialFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		return "", false, nil
-	}
-	token := strings.TrimSpace(file.BearerToken)
-	if token == "" {
-		return "", false, nil
-	}
-	return token, true, nil
 }
 
 func validateBearerToken(secret *corev1.Secret, key, raw string) (string, bool, error) {

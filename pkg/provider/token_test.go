@@ -187,7 +187,7 @@ func TestSecretTokenResolverReadsSFAPIBearerTokenKeys(t *testing.T) {
 	}
 }
 
-func TestSecretTokenResolverReadsBearerTokenFromCredentialJSON(t *testing.T) {
+func TestSecretTokenResolverRejectsBearerTokenInsideCredentialJSON(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "sfapi-bearer", Namespace: "workloads"},
 		Data: map[string][]byte{
@@ -200,12 +200,9 @@ func TestSecretTokenResolverReadsBearerTokenFromCredentialJSON(t *testing.T) {
 		Annotations: map[string]string{annotationCredentialSecretName: "sfapi-bearer"},
 	}}
 
-	token, err := resolver.TokenForPod(context.Background(), pod)
-	if err != nil {
-		t.Fatalf("TokenForPod returned error: %v", err)
-	}
-	if token != "sfapi-access-token" {
-		t.Fatalf("token = %q", token)
+	_, err := resolver.TokenForPod(context.Background(), pod)
+	if err == nil || !strings.Contains(err.Error(), `missing client_id`) {
+		t.Fatalf("error = %v, want missing client_id error because sf_api.json holds client credentials only", err)
 	}
 }
 
