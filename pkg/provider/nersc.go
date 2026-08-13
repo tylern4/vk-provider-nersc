@@ -548,7 +548,7 @@ func (p *NerscProvider) GetPodLogs(ctx context.Context, namespace, name, contain
 			return nil, err
 		}
 		log.Printf("Attempting to fetch logs from output file %s", outputPath)
-		data, downloadErr := client.DownloadFile(ctx, "perlmutter", outputPath)
+		data, downloadErr := client.DownloadFile(ctx, "dtns", outputPath)
 		if downloadErr != nil {
 			log.Printf("Failed to download output file %s: %v", outputPath, downloadErr)
 			return nil, fmt.Errorf("fetch logs via SFAPI: %w; download output file %s: %v", err, outputPath, downloadErr)

@@ -355,8 +355,8 @@ func TestGetPodLogsFallsBackToOutputFileDownload(t *testing.T) {
 	if string(data) != "downloaded logs\n" {
 		t.Fatalf("logs = %q, want downloaded logs newline", string(data))
 	}
-	if !slices.Contains(client.downloadReqs, "perlmutter:"+outputPath) {
-		t.Fatalf("downloadReqs = %+v, want %q", client.downloadReqs, "perlmutter:"+outputPath)
+	if !slices.Contains(client.downloadReqs, "dtns:"+outputPath) {
+		t.Fatalf("downloadReqs = %+v, want %q", client.downloadReqs, "dtns:"+outputPath)
 	}
 }
 
