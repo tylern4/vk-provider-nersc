@@ -20,12 +20,16 @@ import (
 )
 
 func buildStagingState(pod *corev1.Pod, jobScratchBase string, volumeScratchPaths map[string]string) (*podStagingState, error) {
-	inputSource := getAnnotation(pod, annotationInputSource)
-	outputDest := getAnnotation(pod, annotationOutputDest)
 	transferMode, err := getTransferModeAnnotation(pod)
 	if err != nil {
 		return nil, err
 	}
+	inputSource, inputSourceAnnotation := getTransferLocationAnnotation(
+		pod, transferMode, annotationGlobusInputSource, annotationInputSource,
+	)
+	outputDest, outputDestAnnotation := getTransferLocationAnnotation(
+		pod, transferMode, annotationGlobusOutputDest, annotationOutputDest,
+	)
 	stageOut, err := getBoolAnnotation(pod, annotationStageOut)
 	if err != nil {
 		return nil, err
@@ -61,7 +65,7 @@ func buildStagingState(pod *corev1.Pod, jobScratchBase string, volumeScratchPath
 		case stagingTransferModeGlobus:
 			input, err := parseGlobusLocation(inputSource)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", annotationInputSource, err)
+				return nil, fmt.Errorf("%s: %w", inputSourceAnnotation, err)
 			}
 			state.inputSource = input
 			state.inputTargetDir = inputStagePath
@@ -82,13 +86,13 @@ func buildStagingState(pod *corev1.Pod, jobScratchBase string, volumeScratchPath
 			return nil, err
 		}
 		if outputDest == "" {
-			return nil, fmt.Errorf("%s must be set when %s is true", annotationOutputDest, annotationStageOut)
+			return nil, fmt.Errorf("%s must be set when %s is true", outputDestAnnotation, annotationStageOut)
 		}
 		switch transferMode {
 		case stagingTransferModeGlobus:
 			output, err := parseGlobusLocation(outputDest)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", annotationOutputDest, err)
+				return nil, fmt.Errorf("%s: %w", outputDestAnnotation, err)
 			}
 			state.outputDest = output
 			state.outputSourceDir = outputStagePath
@@ -112,6 +116,19 @@ func buildStagingState(pod *corev1.Pod, jobScratchBase string, volumeScratchPath
 	}
 
 	return state, nil
+}
+
+func getTransferLocationAnnotation(pod *corev1.Pod, transferMode stagingTransferMode, globusAnnotation, legacyAnnotation string) (string, string) {
+	if transferMode == stagingTransferModeGlobus {
+		if value := getAnnotation(pod, globusAnnotation); value != "" {
+			return value, globusAnnotation
+		}
+		if value := getAnnotation(pod, legacyAnnotation); value != "" {
+			return value, legacyAnnotation
+		}
+		return "", globusAnnotation
+	}
+	return getAnnotation(pod, legacyAnnotation), legacyAnnotation
 }
 
 func (s *podStagingState) hasStageOut() bool {

@@ -3,9 +3,11 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +35,7 @@ type fakeJobClient struct {
 	cancelErr       error
 	cancelledIDs    []string
 	logsByJob       map[string]string
+	logsErr         error
 	operations      []string
 	commandReqs     []string
 	uploadReqs      []sfapiUploadRequest
@@ -122,6 +125,9 @@ func (f *fakeJobClient) CancelJob(ctx context.Context, jobID string) error {
 func (f *fakeJobClient) FetchJobLogs(ctx context.Context, jobID string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.logsErr != nil {
+		return "", f.logsErr
+	}
 	return f.logsByJob[jobID], nil
 }
 
@@ -318,6 +324,42 @@ func TestCreateGetLogsAndDeletePod(t *testing.T) {
 	}
 }
 
+func TestGetPodLogsFallsBackToOutputFileDownload(t *testing.T) {
+	outputPath := "/pscratch/sd/t/tylern/demo/demo.out"
+	client := &fakeJobClient{
+		submitJobID:   "job-1",
+		statusByJob:   map[string]string{"job-1": "succeeded"},
+		logsErr:       fmt.Errorf("logs unavailable"),
+		downloadFiles: map[string][]byte{outputPath: []byte("downloaded logs\n")},
+	}
+	provider := newTestProvider(client)
+	pod := testPod()
+	pod.Annotations[annotationScratchBase] = "/pscratch/sd/t/tylern"
+
+	if err := provider.CreatePod(context.Background(), pod); err != nil {
+		t.Fatalf("CreatePod returned error: %v", err)
+	}
+	if !strings.Contains(client.submitReq.Script, "#SBATCH --chdir=/pscratch/sd/t/tylern/demo") {
+		t.Fatalf("submitted script missing chdir directive:\n%s", client.submitReq.Script)
+	}
+
+	logs, err := provider.GetPodLogs(context.Background(), pod.Namespace, pod.Name, "main", nil)
+	if err != nil {
+		t.Fatalf("GetPodLogs returned error: %v", err)
+	}
+	defer logs.Close()
+	data, err := io.ReadAll(logs)
+	if err != nil {
+		t.Fatalf("read logs: %v", err)
+	}
+	if string(data) != "downloaded logs\n" {
+		t.Fatalf("logs = %q, want downloaded logs newline", string(data))
+	}
+	if !slices.Contains(client.downloadReqs, "perlmutter:"+outputPath) {
+		t.Fatalf("downloadReqs = %+v, want %q", client.downloadReqs, "perlmutter:"+outputPath)
+	}
+}
+
 func TestGetPodStatusSynthesizesSucceededContainerStatus(t *testing.T) {
 	client := &fakeJobClient{
 		statusByJob: map[string]string{"job-1": "completed"},
@@ -441,7 +483,7 @@ func TestCreatePodStagesInputBeforeSubmittingJob(t *testing.T) {
 	pod.Annotations[annotationScratchBase] = "/pscratch/sd/a/alice/vk-provider-nersc"
 	pod.Annotations[annotationGlobusCredentialSecretName] = "globus-client"
 	pod.Annotations[annotationGlobusStagingCollectionID] = testStagingCollectionID
-	pod.Annotations[annotationInputSource] = "globus://" + testSourceCollectionID + "/global/cfs/cdirs/m1234/input"
+	pod.Annotations[annotationGlobusInputSource] = "globus://" + testSourceCollectionID + "/global/cfs/cdirs/m1234/input"
 	pod.Annotations[annotationInputVolume] = "data"
 	pod.Spec.Volumes = []corev1.Volume{{Name: "data"}, {Name: "work"}}
 	pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "data", MountPath: "/mnt/data"}}
@@ -511,6 +553,26 @@ func TestCreatePodStagesInputWithSFAPITransferMode(t *testing.T) {
 	}
 }
 
+func TestGlobusLocationAnnotationFallsBackToLegacyKey(t *testing.T) {
+	pod := testPod()
+	pod.Annotations[annotationInputSource] = "globus://" + testSourceCollectionID + "/legacy"
+
+	value, annotation := getTransferLocationAnnotation(
+		pod, stagingTransferModeGlobus, annotationGlobusInputSource, annotationInputSource,
+	)
+	if value != pod.Annotations[annotationInputSource] || annotation != annotationInputSource {
+		t.Fatalf("location = %q from %q, want legacy annotation", value, annotation)
+	}
+
+	pod.Annotations[annotationGlobusInputSource] = "globus://" + testSourceCollectionID + "/preferred"
+	value, annotation = getTransferLocationAnnotation(
+		pod, stagingTransferModeGlobus, annotationGlobusInputSource, annotationInputSource,
+	)
+	if value != pod.Annotations[annotationGlobusInputSource] || annotation != annotationGlobusInputSource {
+		t.Fatalf("location = %q from %q, want Globus API annotation", value, annotation)
+	}
+}
+
 func TestGetPodStatusStagesOutputAfterJobSucceeds(t *testing.T) {
 	t.Setenv("USER", "alice")
 
@@ -529,7 +591,7 @@ func TestGetPodStatusStagesOutputAfterJobSucceeds(t *testing.T) {
 	pod.Annotations[annotationGlobusCredentialSecretName] = "globus-client"
 	pod.Annotations[annotationGlobusStagingCollectionID] = testStagingCollectionID
 	pod.Annotations[annotationStageOut] = "true"
-	pod.Annotations[annotationOutputDest] = "globus://" + testDestinationCollectionID + "/global/cfs/cdirs/m1234/output"
+	pod.Annotations[annotationGlobusOutputDest] = "globus://" + testDestinationCollectionID + "/global/cfs/cdirs/m1234/output"
 	pod.Annotations[annotationOutputVolume] = "results"
 	pod.Spec.Volumes = []corev1.Volume{{Name: "data"}, {Name: "results"}}
 	pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "results", MountPath: "/mnt/results"}}

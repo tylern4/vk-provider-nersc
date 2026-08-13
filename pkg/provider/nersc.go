@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -226,6 +227,16 @@ func (p *NerscProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	if pod.Annotations["nersc.slurm/output"] == "" {
+		pod.Annotations["nersc.slurm/output"] = pod.Name + ".out"
+	}
+	if pod.Annotations["nersc.slurm/workdir"] == "" && path.IsAbs(jobScratchBase) && !strings.Contains(jobScratchBase, "$") {
+		pod.Annotations["nersc.slurm/workdir"] = jobScratchBase
+	}
+
 	var script string
 	if len(pod.Spec.Containers) > 1 {
 		script, err = scripts.PodToSlurmPodmanMultiWithVolumes(pod, volumeScratchPaths)
@@ -239,7 +250,6 @@ func (p *NerscProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	jobID, err := client.SubmitJob(ctx, superfacility.JobSubmissionRequest{
 		Script:  script,
 		System:  "perlmutter",
-		Queue:   "regular",
 		Project: projectFromSlurmAccount(pod),
 	})
 	if err != nil {
@@ -532,7 +542,18 @@ func (p *NerscProvider) GetPodLogs(ctx context.Context, namespace, name, contain
 
 	logs, err := client.FetchJobLogs(ctx, state.jobID)
 	if err != nil {
-		return nil, err
+		log.Printf("Failed to fetch logs for pod %s job %s via SFAPI status API: %v", key, state.jobID, err)
+		outputPath := scripts.OutputPathForPod(state.pod)
+		if outputPath == "" {
+			return nil, err
+		}
+		log.Printf("Attempting to fetch logs from output file %s", outputPath)
+		data, downloadErr := client.DownloadFile(ctx, "perlmutter", outputPath)
+		if downloadErr != nil {
+			log.Printf("Failed to download output file %s: %v", outputPath, downloadErr)
+			return nil, fmt.Errorf("fetch logs via SFAPI: %w; download output file %s: %v", err, outputPath, downloadErr)
+		}
+		return io.NopCloser(bytes.NewReader(data)), nil
 	}
 
 	return io.NopCloser(strings.NewReader(logs)), nil

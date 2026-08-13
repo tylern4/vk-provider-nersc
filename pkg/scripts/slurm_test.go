@@ -370,3 +370,85 @@ func TestMultiContainerScriptRejectsUnknownMainContainer(t *testing.T) {
 		t.Fatalf("error = %v, want main container validation error", err)
 	}
 }
+
+func TestOutputPathForPodReturnsDefault(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "main", Image: "image"}},
+		},
+	}
+
+	path := OutputPathForPod(pod)
+	if path != "test-pod.out" {
+		t.Fatalf("OutputPathForPod = %q, want test-pod.out", path)
+	}
+}
+
+func TestOutputPathForPodIncludesWorkDir(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-pod",
+			Annotations: map[string]string{
+				"nersc.slurm/workdir": "/scratch/jobs/test-pod",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "main", Image: "image"}},
+		},
+	}
+
+	path := OutputPathForPod(pod)
+	if path != "/scratch/jobs/test-pod/test-pod.out" {
+		t.Fatalf("OutputPathForPod = %q, want /scratch/jobs/test-pod/test-pod.out", path)
+	}
+}
+
+func TestSlurmWorkDirRendersChdirDirective(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "workdir-test",
+			Annotations: map[string]string{
+				"nersc.slurm/workdir": "/scratch/jobs/workdir-test",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "main", Image: "image"}},
+		},
+	}
+
+	script, err := PodToSlurmPodmanWithVolumes(pod, nil)
+	if err != nil {
+		t.Fatalf("PodToSlurmPodmanWithVolumes returned error: %v", err)
+	}
+
+	if !strings.Contains(script, "#SBATCH --chdir=/scratch/jobs/workdir-test") {
+		t.Fatalf("script missing --chdir directive:\n%s", script)
+	}
+}
+
+func TestOutputPathForPodAbsoluteOutput(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-pod",
+			Annotations: map[string]string{
+				"nersc.slurm/workdir": "/scratch/jobs/test-pod",
+				"nersc.slurm/output":  "/logs/test-pod.out",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "main", Image: "image"}},
+		},
+	}
+
+	path := OutputPathForPod(pod)
+	if path != "/logs/test-pod.out" {
+		t.Fatalf("OutputPathForPod = %q, want /logs/test-pod.out", path)
+	}
+}
+
+func TestOutputPathForPodNilPod(t *testing.T) {
+	if path := OutputPathForPod(nil); path != "" {
+		t.Fatalf("OutputPathForPod(nil) = %q, want empty", path)
+	}
+}

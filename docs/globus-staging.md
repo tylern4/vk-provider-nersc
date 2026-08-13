@@ -62,6 +62,8 @@ stringData:
 
 The refresh token must have been issued for the Transfer API scopes needed by the collections. If Globus rotates the refresh token in its response, the provider uses the rotated value in memory for the lifetime of that client. Secret credential detection uses this precedence: `refresh_token`, then `access_token`/`bearer_token`, then client credentials.
 
+For credentials created by `globus login`, see [Using local Globus CLI and SFAPI tokens](local-credentials.md). It includes an example that safely extracts the matching CLI refresh or access token from `~/.globus/cli/storage.db` into a workload Secret.
+
 ## Stage-In
 
 ```yaml
@@ -70,7 +72,7 @@ metadata:
     nersc.sf/credentialSecretName: "sfapi-client"
     nersc.sf/transferMode: "globus"
     nersc.sf/scratchBase: "/pscratch/sd/a/alice/vk-provider-nersc"
-    nersc.sf/inputSource: "globus://<source-collection-id>/path/to/input"
+    globus.api/inputSource: "globus://<source-collection-id>/path/to/input"
     nersc.sf/inputVolume: "data"
     globus.api/credentialSecretName: "globus-client"
     globus.api/stagingCollectionID: "<nersc-collection-id>"
@@ -90,7 +92,7 @@ metadata:
     nersc.sf/credentialSecretName: "sfapi-client"
     nersc.sf/transferMode: "globus"
     nersc.sf/scratchBase: "/pscratch/sd/a/alice/vk-provider-nersc"
-    nersc.sf/outputDest: "globus://<destination-collection-id>/path/to/output"
+    globus.api/outputDest: "globus://<destination-collection-id>/path/to/output"
     nersc.sf/outputVolume: "data"
     nersc.sf/stageOut: "true"
     globus.api/credentialSecretName: "globus-client"
@@ -105,15 +107,17 @@ After the Slurm job succeeds, VK submits the output transfer and keeps the pod i
 | --- | --- | --- |
 | `globus.api/credentialSecretName` | For Globus staging | Secret containing client credentials, an access/bearer token, or a refresh token. |
 | `globus.api/credentialSecretKey` | No | JSON credential key; defaults to `globus.json`. If absent, separate `client_id`, `client_secret`, `access_token`/`bearer_token`, and `refresh_token` keys are read. |
+| `globus.api/inputSource` | For stage-in | `globus://<collection-uuid>/<collection-relative-path>`. |
+| `globus.api/outputDest` | When stage-out is enabled | `globus://<collection-uuid>/<collection-relative-path>`. |
 | `globus.api/stagingCollectionID` | For Globus staging | Globus collection UUID exposing the concrete NERSC scratch path. |
 | `globus.api/scope` | No | Scope requested by the client-credentials flow. Defaults to `urn:globus:auth:scope:transfer.api.globus.org:all`. Bearer and refresh tokens retain their issued scopes. |
 | `nersc.sf/scratchBase` | For Globus staging | Concrete absolute path visible through the staging collection. Shell expressions such as `$SCRATCH` cannot be sent to the Transfer API. |
-| `nersc.sf/inputSource` | For stage-in | `globus://<collection-uuid>/<collection-relative-path>`. |
-| `nersc.sf/outputDest` | When stage-out is enabled | `globus://<collection-uuid>/<collection-relative-path>`. |
 | `nersc.sf/stageOut` | No | Set to `true` to enable stage-out after a successful job. |
 | `nersc.sf/inputVolume` | With multiple volumes | Volume whose scratch path receives input. |
 | `nersc.sf/outputVolume` | With multiple volumes | Volume whose scratch path supplies output. |
 | `nersc.sf/stageVolume` | No | Shared fallback for the input and output volume. |
+
+For compatibility, Globus mode still accepts the legacy `nersc.sf/inputSource` and `nersc.sf/outputDest` keys when their `globus.api` replacements are absent. New workloads should use the `globus.api` keys.
 
 ## Collection access
 

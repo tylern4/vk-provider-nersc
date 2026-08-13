@@ -13,7 +13,7 @@ metadata:
   annotations:
     nersc.sf/credentialSecretName: "sfapi-client"
     nersc.sf/scratchBase: "/pscratch/sd/a/alice/vk-provider-nersc"
-    nersc.sf/inputSource: "globus://source-collection-id/path/to/input"
+    globus.api/inputSource: "globus://source-collection-id/path/to/input"
     nersc.sf/inputVolume: "data"
     globus.api/credentialSecretName: "globus-client"
     globus.api/stagingCollectionID: "nersc-collection-id"
@@ -34,6 +34,6 @@ spec:
 
 ## Behavior
 - Without staging annotations, VK mounts scratch-backed volumes and performs no Globus transfers.
-- With `nersc.sf/inputSource`, VK stages data to the concrete `nersc.sf/scratchBase` workload path before job submission.
-- With `nersc.sf/stageOut: "true"` and `nersc.sf/outputDest`, VK stages output after successful job completion.
+- With `globus.api/inputSource`, VK stages data to the concrete `nersc.sf/scratchBase` workload path before job submission.
+- With `nersc.sf/stageOut: "true"` and `globus.api/outputDest`, VK stages output after successful job completion.
 - PVC annotations are not read directly by the provider; copy staging annotations to the pod template.

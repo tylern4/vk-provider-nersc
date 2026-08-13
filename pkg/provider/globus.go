@@ -20,6 +20,8 @@ const (
 	annotationGlobusCredentialSecretKey  = "globus.api/credentialSecretKey"
 	annotationGlobusStagingCollectionID  = "globus.api/stagingCollectionID"
 	annotationGlobusScope                = "globus.api/scope"
+	annotationGlobusInputSource          = "globus.api/inputSource"
+	annotationGlobusOutputDest           = "globus.api/outputDest"
 
 	defaultGlobusCredentialSecretKey   = "globus.json"
 	defaultGlobusClientIDSecretKey     = "client_id"
