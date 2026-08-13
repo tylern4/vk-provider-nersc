@@ -190,7 +190,7 @@ cleanup() {
   set +e
   rm -f "${workflow_tmp}/token-rows" "${workflow_tmp}/client_id" \
     "${workflow_tmp}/client_secret" "${workflow_tmp}/refresh_token" \
-    "${workflow_tmp}/access_token" "${workflow_tmp}/pod.yaml"
+    "${workflow_tmp}/bearer_token" "${workflow_tmp}/pod.yaml"
   rmdir "$workflow_tmp" 2>/dev/null
   if [[ $k8s_created -eq 1 && $KEEP_RESOURCES != 1 ]]; then
     kubectl delete pod "$pod_name" -n "$KUBE_NAMESPACE" --ignore-not-found --wait=false >/dev/null
@@ -279,7 +279,7 @@ case $GLOBUS_TOKEN_MODE in
     [[ $expires_at =~ ^[0-9]+$ ]] || die "selected Globus access token has no valid expiry"
     now=$(date +%s)
     (( expires_at - now > 300 )) || die "Globus access token expires within five minutes; run 'globus login --force'"
-    printf '%s' "$access_token" >"${workflow_tmp}/access_token"
+    printf '%s' "$access_token" >"${workflow_tmp}/bearer_token"
     ;;
 esac
 
@@ -289,12 +289,12 @@ esac
 
 # SFAPI bearer token secret, read directly from the local token file.
 kubectl create secret generic "$sfapi_secret" -n "$KUBE_NAMESPACE" \
-  --from-file="access_token=${SFAPI_TOKEN_FILE}" --dry-run=client -o yaml |
+  --from-file="bearer_token=${SFAPI_TOKEN_FILE}" --dry-run=client -o yaml |
   kubectl apply -f - >/dev/null
 k8s_created=1
 
 # Globus secret: confidential-client credentials plus refresh token, or just
-# the current access token in bearer mode.
+# the current bearer token in bearer mode.
 if [[ $GLOBUS_TOKEN_MODE == "refresh" ]]; then
   kubectl create secret generic "$globus_secret" -n "$KUBE_NAMESPACE" \
     --from-file="client_id=${workflow_tmp}/client_id" \
@@ -303,7 +303,7 @@ if [[ $GLOBUS_TOKEN_MODE == "refresh" ]]; then
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 else
   kubectl create secret generic "$globus_secret" -n "$KUBE_NAMESPACE" \
-    --from-file="access_token=${workflow_tmp}/access_token" \
+    --from-file="bearer_token=${workflow_tmp}/bearer_token" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 fi
 

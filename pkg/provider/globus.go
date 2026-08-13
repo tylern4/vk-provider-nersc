@@ -26,7 +26,6 @@ const (
 	defaultGlobusCredentialSecretKey   = "globus.json"
 	defaultGlobusClientIDSecretKey     = "client_id"
 	defaultGlobusClientSecretKey       = "client_secret"
-	defaultGlobusAccessTokenSecretKey  = "access_token"
 	defaultGlobusBearerTokenSecretKey  = "bearer_token"
 	defaultGlobusRefreshTokenSecretKey = "refresh_token"
 )
@@ -58,7 +57,6 @@ type cachedGlobusClient struct {
 type globusCredentialFile struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
-	AccessToken  string `json:"access_token"`
 	BearerToken  string `json:"bearer_token"`
 	RefreshToken string `json:"refresh_token"`
 }
@@ -134,8 +132,8 @@ func (r *SecretGlobusClientResolver) tokenSourceForCredential(credential globusC
 		return globusapi.NewRefreshTokenSourceWithOptions(
 			credential.ClientID, credential.ClientSecret, credential.RefreshToken, r.authTokenURL, r.httpClient,
 		)
-	case credential.AccessToken != "":
-		return globusapi.NewStaticTokenSource(credential.AccessToken)
+	case credential.BearerToken != "":
+		return globusapi.NewStaticTokenSource(credential.BearerToken)
 	default:
 		return globusapi.NewClientCredentialsTokenSourceWithScopeOptions(
 			credential.ClientID, credential.ClientSecret, scope, r.authTokenURL, r.httpClient,
@@ -164,10 +162,7 @@ func globusCredentialsFromSecret(secret *corev1.Secret, requestedKey string) (gl
 	return validateGlobusCredential(secret, globusCredentialFile{
 		ClientID:     string(secret.Data[defaultGlobusClientIDSecretKey]),
 		ClientSecret: string(secret.Data[defaultGlobusClientSecretKey]),
-		AccessToken: firstNonEmpty(
-			string(secret.Data[defaultGlobusAccessTokenSecretKey]),
-			string(secret.Data[defaultGlobusBearerTokenSecretKey]),
-		),
+		BearerToken:  string(secret.Data[defaultGlobusBearerTokenSecretKey]),
 		RefreshToken: string(secret.Data[defaultGlobusRefreshTokenSecretKey]),
 	})
 }
@@ -175,8 +170,7 @@ func globusCredentialsFromSecret(secret *corev1.Secret, requestedKey string) (gl
 func validateGlobusCredential(secret *corev1.Secret, credential globusCredentialFile) (globusCredentialFile, error) {
 	credential.ClientID = strings.TrimSpace(credential.ClientID)
 	credential.ClientSecret = strings.TrimSpace(credential.ClientSecret)
-	credential.AccessToken = firstNonEmpty(credential.AccessToken, credential.BearerToken)
-	credential.BearerToken = ""
+	credential.BearerToken = strings.TrimSpace(credential.BearerToken)
 	credential.RefreshToken = strings.TrimSpace(credential.RefreshToken)
 	if credential.RefreshToken != "" && credential.ClientID == "" {
 		return globusCredentialFile{}, fmt.Errorf("Globus credential secret %s/%s missing client_id for refresh_token", secret.Namespace, secret.Name)
@@ -184,7 +178,7 @@ func validateGlobusCredential(secret *corev1.Secret, credential globusCredential
 	if credential.RefreshToken != "" && credential.ClientSecret == "" {
 		return globusCredentialFile{}, fmt.Errorf("Globus credential secret %s/%s missing client_secret for refresh_token", secret.Namespace, secret.Name)
 	}
-	if credential.RefreshToken != "" || credential.AccessToken != "" {
+	if credential.RefreshToken != "" || credential.BearerToken != "" {
 		return credential, nil
 	}
 	if credential.ClientID == "" {

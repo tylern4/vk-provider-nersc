@@ -122,14 +122,14 @@ func TestSecretTokenResolverReadsSeparateClientIDAndJWKKeys(t *testing.T) {
 	}
 }
 
-func TestSecretTokenResolverStillSupportsLegacyRawTokenSecret(t *testing.T) {
+func TestSecretTokenResolverReadsRawBearerTokenSecret(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "sf-job-token",
 			Namespace: "workloads",
 		},
 		Data: map[string][]byte{
-			"token": []byte(" job-token \n"),
+			"bearer_token": []byte(" job-token \n"),
 		},
 	})
 	resolver := NewSecretTokenResolver(client.CoreV1())
@@ -157,9 +157,7 @@ func TestSecretTokenResolverReadsSFAPIBearerTokenKeys(t *testing.T) {
 		name string
 		key  string
 	}{
-		{name: "access token", key: defaultAccessTokenSecretKey},
 		{name: "bearer token", key: defaultBearerTokenSecretKey},
-		{name: "token", key: defaultTokenSecretKey},
 	}
 
 	for _, tt := range tests {
@@ -193,7 +191,7 @@ func TestSecretTokenResolverReadsBearerTokenFromCredentialJSON(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "sfapi-bearer", Namespace: "workloads"},
 		Data: map[string][]byte{
-			defaultCredentialSecretKey: []byte(`{"access_token":"sfapi-access-token"}`),
+			defaultCredentialSecretKey: []byte(`{"bearer_token":"sfapi-access-token"}`),
 		},
 	})
 	resolver := NewSecretTokenResolver(client.CoreV1())
@@ -279,13 +277,13 @@ func TestSecretTokenResolverReportsMissingTokenKey(t *testing.T) {
 			Namespace: "workloads",
 			Annotations: map[string]string{
 				annotationTokenSecretName: "sf-job-token",
-				annotationTokenSecretKey:  "token",
+				annotationTokenSecretKey:  "bearer_token",
 			},
 		},
 	}
 
 	_, err := resolver.TokenForPod(context.Background(), pod)
-	if err == nil || !strings.Contains(err.Error(), `missing key "token"`) {
+	if err == nil || !strings.Contains(err.Error(), `missing key "bearer_token"`) {
 		t.Fatalf("error = %v, want missing key error", err)
 	}
 }
@@ -297,7 +295,7 @@ func TestSecretTokenResolverReportsEmptyToken(t *testing.T) {
 			Namespace: "workloads",
 		},
 		Data: map[string][]byte{
-			"token": []byte(" \n"),
+			"bearer_token": []byte(" \n"),
 		},
 	})
 	resolver := NewSecretTokenResolver(client.CoreV1())
@@ -312,7 +310,7 @@ func TestSecretTokenResolverReportsEmptyToken(t *testing.T) {
 	}
 
 	_, err := resolver.TokenForPod(context.Background(), pod)
-	if err == nil || !strings.Contains(err.Error(), `key "token" is empty`) {
+	if err == nil || !strings.Contains(err.Error(), `key "bearer_token" is empty`) {
 		t.Fatalf("error = %v, want empty token error", err)
 	}
 }

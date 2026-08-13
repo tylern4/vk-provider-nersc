@@ -101,19 +101,10 @@ func TestGlobusCredentialsSupportBearerAndRefreshTokens(t *testing.T) {
 		assert func(*testing.T, globusCredentialFile)
 	}{
 		{
-			name: "access token",
-			data: map[string][]byte{defaultGlobusAccessTokenSecretKey: []byte("access-token")},
-			assert: func(t *testing.T, credential globusCredentialFile) {
-				if credential.AccessToken != "access-token" || credential.RefreshToken != "" {
-					t.Fatalf("credential = %+v", credential)
-				}
-			},
-		},
-		{
-			name: "bearer token alias",
+			name: "bearer token",
 			data: map[string][]byte{defaultGlobusBearerTokenSecretKey: []byte("bearer-token")},
 			assert: func(t *testing.T, credential globusCredentialFile) {
-				if credential.AccessToken != "bearer-token" {
+				if credential.BearerToken != "bearer-token" || credential.RefreshToken != "" {
 					t.Fatalf("credential = %+v", credential)
 				}
 			},
@@ -160,7 +151,7 @@ func TestGlobusCredentialRefreshTokenRequiresClientCredentials(t *testing.T) {
 func TestGlobusResolverSelectsTokenSourceByCredentialType(t *testing.T) {
 	resolver := &SecretGlobusClientResolver{authTokenURL: globusapi.DefaultAuthTokenURL, httpClient: http.DefaultClient}
 
-	bearer, err := resolver.tokenSourceForCredential(globusCredentialFile{AccessToken: "access-token"}, globusapi.TransferScope)
+	bearer, err := resolver.tokenSourceForCredential(globusCredentialFile{BearerToken: "bearer-token"}, globusapi.TransferScope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +160,7 @@ func TestGlobusResolverSelectsTokenSourceByCredentialType(t *testing.T) {
 	}
 
 	refresh, err := resolver.tokenSourceForCredential(globusCredentialFile{
-		ClientID: "client-id", ClientSecret: "client-secret", AccessToken: "access-token", RefreshToken: "refresh-token",
+		ClientID: "client-id", ClientSecret: "client-secret", BearerToken: "bearer-token", RefreshToken: "refresh-token",
 	}, globusapi.TransferScope)
 	if err != nil {
 		t.Fatal(err)

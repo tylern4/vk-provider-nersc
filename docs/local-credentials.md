@@ -47,7 +47,7 @@ Create or update a Secret without putting the token itself on the command line:
 
 ```bash
 kubectl create secret generic sfapi-local-token \
-  --from-file=access_token="$HOME/.ssh/nersc-token" \
+  --from-file=bearer_token="$HOME/.ssh/nersc-token" \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
@@ -73,7 +73,7 @@ sqlite3 ~/.globus/cli/storage.db \
 The workflow script described below performs parameter selection and extraction for you. It joins the selected Transfer token to the matching `auth_client_data` record and creates one of these Secrets:
 
 - Default `refresh` mode: `client_id`, `client_secret`, and `refresh_token`
-- Optional `bearer` mode: the current `access_token`
+- Optional `bearer` mode: the current token stored as `bearer_token`
 
 Refresh mode avoids a workflow failing merely because the CLI access token expires. If the database contains more than one Transfer token row, set `GLOBUS_TOKEN_NAMESPACE` to one value from the command above. To force the short-lived access token path, set `GLOBUS_TOKEN_MODE=bearer`.
 

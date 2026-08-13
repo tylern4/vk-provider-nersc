@@ -23,9 +23,7 @@ const (
 	defaultJWKSecretKey        = "jwk"
 	defaultSecretJWKKey        = "secret"
 
-	defaultAccessTokenSecretKey = "access_token"
 	defaultBearerTokenSecretKey = "bearer_token"
-	defaultTokenSecretKey       = "token"
 )
 
 type bearerTokenSource interface {
@@ -51,9 +49,7 @@ type sfapiCredentialFile struct {
 	ClientID    string          `json:"client_id"`
 	Secret      json.RawMessage `json:"secret"`
 	JWK         json.RawMessage `json:"jwk"`
-	AccessToken string          `json:"access_token"`
 	BearerToken string          `json:"bearer_token"`
-	Token       string          `json:"token"`
 }
 
 type sfapiClientCredential struct {
@@ -259,7 +255,7 @@ func bearerTokenFromSecret(secret *corev1.Secret, requestedKey string) (string, 
 			return token, found, err
 		}
 	}
-	for _, key := range []string{defaultAccessTokenSecretKey, defaultBearerTokenSecretKey, defaultTokenSecretKey} {
+	for _, key := range []string{defaultBearerTokenSecretKey} {
 		if data, ok := secret.Data[key]; ok {
 			return validateBearerToken(secret, key, string(data))
 		}
@@ -286,11 +282,11 @@ func bearerTokenFromJSON(secret *corev1.Secret, key string, data []byte) (string
 	if err := json.Unmarshal(data, &file); err != nil {
 		return "", false, nil
 	}
-	token := firstNonEmpty(file.AccessToken, file.BearerToken, file.Token)
+	token := strings.TrimSpace(file.BearerToken)
 	if token == "" {
 		return "", false, nil
 	}
-	return validateBearerToken(secret, key, token)
+	return token, true, nil
 }
 
 func validateBearerToken(secret *corev1.Secret, key, raw string) (string, bool, error) {

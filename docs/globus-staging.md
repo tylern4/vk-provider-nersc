@@ -30,7 +30,7 @@ The Secret may instead contain separate `client_id` and `client_secret` keys. Ac
 
 ### Bearer token
 
-To use an existing Transfer API access token, store it as `access_token` (or the `bearer_token` alias):
+To use an existing Transfer API bearer token, store it under `bearer_token`:
 
 ```yaml
 apiVersion: v1
@@ -39,7 +39,7 @@ metadata:
   name: globus-bearer-token
 type: Opaque
 stringData:
-  access_token: "<globus-transfer-access-token>"
+  bearer_token: "<globus-transfer-bearer-token>"
 ```
 
 The provider uses bearer tokens as-is and cannot refresh them. Rotate the Secret before the token expires; a changed Secret resource version causes the provider to build a client with the new token.
@@ -60,7 +60,7 @@ stringData:
   refresh_token: "<globus-transfer-refresh-token>"
 ```
 
-The refresh token must have been issued for the Transfer API scopes needed by the collections. If Globus rotates the refresh token in its response, the provider uses the rotated value in memory for the lifetime of that client. Secret credential detection uses this precedence: `refresh_token`, then `access_token`/`bearer_token`, then client credentials.
+The refresh token must have been issued for the Transfer API scopes needed by the collections. If Globus rotates the refresh token in its response, the provider uses the rotated value in memory for the lifetime of that client. Secret credential detection uses this precedence: `refresh_token`, then `bearer_token`, then client credentials.
 
 For credentials created by `globus login`, see [Using local Globus CLI and SFAPI tokens](local-credentials.md). It includes an example that safely extracts the matching CLI refresh or access token from `~/.globus/cli/storage.db` into a workload Secret.
 
@@ -105,8 +105,8 @@ After the Slurm job succeeds, VK submits the output transfer and keeps the pod i
 
 | Annotation | Required | Description |
 | --- | --- | --- |
-| `globus.api/credentialSecretName` | For Globus staging | Secret containing client credentials, an access/bearer token, or a refresh token. |
-| `globus.api/credentialSecretKey` | No | JSON credential key; defaults to `globus.json`. If absent, separate `client_id`, `client_secret`, `access_token`/`bearer_token`, and `refresh_token` keys are read. |
+| `globus.api/credentialSecretName` | For Globus staging | Secret containing client credentials, a bearer token, or a refresh token. |
+| `globus.api/credentialSecretKey` | No | JSON credential key; defaults to `globus.json`. If absent, separate `client_id`, `client_secret`, `bearer_token`, and `refresh_token` keys are read. |
 | `globus.api/inputSource` | For stage-in | `globus://<collection-uuid>/<collection-relative-path>`. |
 | `globus.api/outputDest` | When stage-out is enabled | `globus://<collection-uuid>/<collection-relative-path>`. |
 | `globus.api/stagingCollectionID` | For Globus staging | Globus collection UUID exposing the concrete NERSC scratch path. |
